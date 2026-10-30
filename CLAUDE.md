@@ -73,18 +73,41 @@
 
 ## 빌드 및 실행
 
-<!-- TODO: 프로젝트별 빌드/테스트 명령을 여기에 기술한다 -->
+개발 환경은 컨테이너로 관리한다. 호스트에는 Docker만 있으면 되고, `go`·`npm`은 컨테이너 안에서 실행한다.
+아래 명령은 모두 `Docker/` 폴더에서 실행한다.
 
 ```bash
+# 최초 1회: 환경 변수 파일 생성 후 POSTGRES_PASSWORD 변경
+cp .env.example .env
+
+# 실행 (db → backend → frontend 순으로 기동)
+docker compose up -d --build
+docker compose ps                     # db healthy, backend·frontend Up 확인
+# 백엔드 http://localhost:8080/healthz, 프론트엔드 http://localhost:5173
+
+# 소스 변경 반영
+docker compose restart backend        # Go 소스 변경 시 (자동 재시작 없음)
+                                      # 프론트엔드는 Vite HMR로 자동 반영
+
 # 빌드
-[빌드 명령]
+docker compose exec backend go build ./...
+docker compose exec frontend npm run build
 
 # 테스트
-[테스트 명령]
+docker compose exec backend go vet ./...
+docker compose exec backend go test ./...
 
-# 실행
-[실행 명령]
+# 의존성 추가
+docker compose exec backend go get <모듈>
+docker compose exec frontend npm install <패키지>
+
+# 중지
+docker compose down                   # 데이터 유지
+docker compose down -v                # 볼륨 삭제 (DB 초기화)
 ```
+
+- Git Bash에서 컨테이너 안의 절대 경로(`/app` 등)를 인자로 넘길 때는 `MSYS_NO_PATHCONV=1`을 앞에 붙인다.
+- 프론트엔드는 `/api/*`로 호출하고, Vite 프록시가 `/api`를 떼어 백엔드로 넘긴다(`/api/healthz` → `/healthz`).
 
 ---
 

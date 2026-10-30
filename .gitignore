@@ -1,0 +1,19 @@
+# 환경 변수 (비밀번호 포함)
+.env
+!.env.example
+
+# Go
+src/backend/bin/
+*.exe
+*.test
+*.out
+
+# Node / Vite
+node_modules/
+src/frontend/dist/
+
+# 에디터·OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,167 +1,83 @@
-# Hyper-Waterfall 프로젝트 템플릿
+# Card-Market (PokeCardPrice)
 
-> rhwp 프로젝트에서 검증된 Hyper-Waterfall 방법론을 새 프로젝트에 바로 적용하기 위한 템플릿이다.
+포켓몬 카드 시세 비교 웹 애플리케이션.
 
-## 이 템플릿이 포함하는 것
+여러 거래처(TCGplayer, Cardmarket, 국내 거래가 등)의 포켓몬 카드 가격을 원화로 환산해 한 화면에서 비교하고,
+날짜별 시세를 쌓아 과거와 현재 가격의 추이를 보여 준다.
+
+> 현재 개발 초기 단계다. 개발 환경과 서버·화면 골격까지 구성되어 있다.
+
+## 주요 기능 (계획)
+
+- **홈·검색**: 카드 이름·세트·번호 검색, 급등·급락 순위
+- **카드 상세**: 거래처별 원화 가격, 평균가, 기간별(7일/30일/90일/1년) 시세 추이 차트
+- **내 컬렉션**: 로그인 사용자별 보유 카드 관리, 총 평가액과 기간별 증감
+
+## 기술 스택
+
+| 영역 | 기술 |
+|------|------|
+| 프론트엔드 | Vite + Vue 3 |
+| 백엔드 | Go (`net/http`) |
+| DB | PostgreSQL 18 |
+| 개발 환경 | Docker Compose |
+
+## 저장소 구조
 
 ```
-hyper-waterfall/
-├── CLAUDE.md                               ← Claude Code 지시서 (수정 후 사용)
-├── README.md                               ← 이 파일
-└── mydocs/
-    ├── manual/
-    │   └── hyper_waterfall.md              ← 방법론 설명서
-    ├── orders/
-    │   └── YYYYMMDD_template.md            ← 오늘 할일 템플릿
-    ├── plans/
-    │   ├── task_MILESTONE_NUM_template.md       ← 수행 계획서 템플릿
-    │   └── task_MILESTONE_NUM_impl_template.md  ← 구현 계획서 템플릿
-    ├── working/
-    │   └── task_MILESTONE_NUM_stageN_template.md ← 단계별 완료보고서 템플릿
-    ├── report/
-    │   └── task_MILESTONE_NUM_report_template.md ← 최종 결과보고서 템플릿
-    ├── feedback/
-    │   └── feedback_template.md            ← 피드백 문서 템플릿
-    ├── tech/
-    │   └── tech_investigation_template.md  ← 기술 조사 템플릿
-    └── troubleshootings/
-        └── troubleshooting_template.md     ← 트러블슈팅 템플릿
+PokeCardPrice/
+├── Docker/                 ← 개발 컨테이너 정의
+│   ├── docker-compose.yml  ← db, backend, frontend 서비스
+│   ├── .env.example        ← 환경 변수 예시 (.env로 복사해 사용)
+│   ├── backend/            ← Go 개발 이미지
+│   └── frontend/           ← Node.js 개발 이미지
+├── src/
+│   ├── backend/            ← Go API 서버
+│   │   ├── cmd/server/     ← 진입점
+│   │   └── internal/       ← 내부 패키지
+│   └── frontend/           ← Vue 웹 앱
+├── docs/                   ← 텀프로젝트 계획서
+└── mydocs/                 ← 작업 문서 (계획서, 보고서, 기술 조사)
 ```
 
----
+## 실행 방법
 
-## 새 프로젝트에 적용하는 방법
-
-### 1단계: 파일 복사
-
-`hyper-waterfall/` 안의 파일들을 새 프로젝트 루트에 복사한다.
+호스트에는 [Docker](https://www.docker.com/)만 있으면 된다. Go와 Node.js는 컨테이너 안에서 실행한다.
 
 ```bash
-# 예시: my-project에 적용
-cp -r hyper-waterfall/CLAUDE.md my-project/
-cp -r hyper-waterfall/mydocs my-project/
+cd Docker
+cp .env.example .env            # 최초 1회, POSTGRES_PASSWORD 변경
+docker compose up -d --build    # db → backend → frontend 기동
+docker compose ps               # 상태 확인
 ```
 
-### 2단계: CLAUDE.md 커스터마이징
+| 서비스 | 주소 |
+|--------|------|
+| 프론트엔드 | http://localhost:5173 |
+| 백엔드 | http://localhost:8080/healthz |
+| PostgreSQL | localhost:5432 |
 
-`CLAUDE.md`를 열고 `TODO` 항목을 채운다:
+포트는 `Docker/.env`에서 바꿀 수 있다.
 
-- **프로젝트 개요**: 목표와 기술 스택 기술
-- **빌드 및 실행**: 프로젝트별 빌드/테스트/실행 명령 기술
-
-```markdown
-## 프로젝트 개요
-
-**목표**: 내 프로젝트 목표
-**기술 스택**: TypeScript, Node.js, PostgreSQL
-```
-
-### 3단계: GitHub Issues 설정
-
-하이퍼-워터폴은 GitHub Issues를 타스크 번호로 사용한다.
+### 개발 명령
 
 ```bash
-# 첫 번째 타스크 등록 예시
-gh issue create --title "기능명: 설명" --body "상세 내용"
+# Docker/ 폴더에서 실행
+docker compose exec backend go test ./...     # 백엔드 테스트
+docker compose exec backend go build ./...    # 백엔드 빌드
+docker compose restart backend                # Go 소스 변경 반영
+docker compose exec frontend npm run build    # 프론트엔드 빌드 (화면은 HMR로 자동 반영)
+docker compose down                           # 중지 (데이터 유지)
+docker compose down -v                        # 중지 + DB 초기화
 ```
 
-마일스톤도 설정한다:
+## 개발 방식
 
-```bash
-gh api repos/{owner}/{repo}/milestones \
-  --method POST \
-  --field title="v1.0.0" \
-  --field description="첫 번째 릴리즈"
-```
+GitHub Issues를 타스크 단위로 사용하는 하이퍼-워터폴 방법론으로 진행한다.
+상세 내용은 [`mydocs/manual/hyper_waterfall.md`](mydocs/manual/hyper_waterfall.md)를 참고한다.
 
-### 4단계: 브랜치 구조 설정
-
-```bash
-git checkout -b devel
-git checkout -b local/devel
-```
-
----
-
-## 첫 번째 타스크 시작 방법
-
-### 1. 오늘 할일 작성
-
-`mydocs/orders/YYYYMMDD_template.md`를 복사하여 오늘 날짜로 만든다:
-
-```bash
-cp mydocs/orders/YYYYMMDD_template.md mydocs/orders/20260427.md
-```
-
-파일을 열고 타스크 정보를 채운다.
-
-### 2. 타스크 브랜치 생성
-
-```bash
-git checkout local/devel
-git checkout -b local/task1   # 이슈 번호에 맞게
-```
-
-### 3. Claude Code에 수행 계획서 작성 요청
-
-Claude Code에게 다음과 같이 요청한다:
-
-```
-GitHub 이슈 #1의 수행 계획서를 작성해줘.
-이슈 내용: [이슈 내용]
-마일스톤: m100
-```
-
-Claude Code가 `mydocs/plans/task_m100_1.md`를 생성한다.
-
-### 4. 계획서 검토 후 승인
-
-계획서를 읽고 방향이 맞으면 "승인" 또는 "다음 단계 진행해줘"라고 응답한다.
-방향이 틀리면 구체적인 피드백을 준다.
-
-### 5. 단계별 구현 → 보고서 → 승인 반복
-
-각 단계가 완료될 때마다:
-- Claude Code가 `mydocs/working/task_m100_1_stage1.md` 작성
-- 검토 후 승인하면 다음 단계 진행
-
-### 6. 최종 보고서 작성 및 이슈 클로즈
-
-모든 단계 완료 후:
-- Claude Code가 `mydocs/report/task_m100_1_report.md` 작성
-- 검토 후 승인하면 이슈 클로즈
-
----
-
-## 파일명 규칙 요약
-
-| 문서 | 파일명 | 위치 |
-|------|--------|------|
-| 오늘 할일 | `20260427.md` | `mydocs/orders/` |
-| 수행 계획서 | `task_m100_1.md` | `mydocs/plans/` |
-| 구현 계획서 | `task_m100_1_impl.md` | `mydocs/plans/` |
-| 단계별 보고서 | `task_m100_1_stage1.md` | `mydocs/working/` |
-| 최종 보고서 | `task_m100_1_report.md` | `mydocs/report/` |
-| 피드백 | `feedback_기능명.md` | `mydocs/feedback/` |
-| 기술 조사 | `기술명.md` | `mydocs/tech/` |
-| 트러블슈팅 | `문제명.md` | `mydocs/troubleshootings/` |
-
-**마일스톤 표기**: `m100` = v1.0.0, `m200` = v2.0.0, `m050` = v0.5.0
-
----
-
-## 핵심 원칙 (반드시 숙지)
-
-1. **소스 수정 전 반드시 승인** — 아무리 명백한 버그라도 먼저 보고하고 승인받는다
-2. **단계 건너뛰기 금지** — 이슈 → 브랜치 → 할일 → 계획서 → 구현 순서 준수
-3. **AI가 작업 종료를 결정하지 않는다** — 작업지시자가 결정한다
-4. **문서는 타스크 브랜치에서 커밋** — merge 전 `git status`로 확인
-5. **최종 보고서는 `report/` 폴더** — `working/`에 두지 않는다
-
----
-
-## 방법론 상세
-
-`mydocs/manual/hyper_waterfall.md` 참조.
-
-rhwp 프로젝트 실전 적용 사례: https://github.com/edwardkim/rhwp
+| 마일스톤 | 내용 |
+|----------|------|
+| M010 (v0.1.0) | 기반 구축 및 기술 조사 |
+| M050 (v0.5.0) | 백엔드 및 데이터 수집 |
+| M100 (v1.0.0) | 프론트엔드, 검증, 릴리즈 |
