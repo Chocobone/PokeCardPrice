@@ -2,7 +2,7 @@
 
 > **작성일**: 2026-11-01
 > **관련 타스크**: [#2](https://github.com/Chocobone/PokeCardPrice/issues/2) 시세 데이터 소스 조사
-> **상태**: 1단계(카드·해외 시세 API) 작성. 환율은 2단계, 소스 확정은 4단계에서 추가한다.
+> **상태**: 1단계(카드·해외 시세 API), 2단계(환율) 작성. 소스 확정은 4단계에서 추가한다.
 
 ---
 
@@ -162,6 +162,48 @@ TCGCSV가 TCGplayer 데이터를 재공개할 권한이 있는지, TCGplayer 약
 | `tcgplayer.com` | 상품 경로 허용, `Crawl-Delay: 10` |
 | `cardmarket.com` | ClaudeBot, GPTBot 등 AI 크롤러 전면 차단 |
 
+### 7. 환율 API 비교
+
+달러(TCGplayer)와 유로(Cardmarket) 가격을 원화로 환산할 소스를 비교한다. 시작 후보 3개에 한국은행 ECOS를 추가했다.
+공식 문서를 읽지 못해 블로그·외부 도구 문서에서만 찾은 내용은 `2차 자료`로 표시하며, 사실로 확정하지 않는다.
+
+| 비교 항목 | Frankfurter v2 | open.er-api.com | 한국수출입은행 | 한국은행 ECOS |
+|-----------|----------------|-----------------|----------------|---------------|
+| KRW·USD·EUR | 지원 (응답 확인) | 지원 (응답 확인) | `미확인` (공식 문서 판독 불가) | `미확인` |
+| 환율 성격 | 106개 기관 혼합 중간값. `providers=ecb`로 ECB 기준환율 선택 가능 (문서 확인) | 산출 방식 `미확인` | 매매기준율, 송금 환율 필드 (`2차 자료`) | `미확인` |
+| 갱신 | 매일 (문서 확인) | 하루 1회. 호출 시점 다음 갱신 예정 시각 제공 (응답 확인) | 영업일 오전 11시 전후 (`2차 자료`). 포털 표기는 "실시간" | `미확인` |
+| 주말 | 혼합값은 토·일 날짜 값 반환. ECB는 직전 영업일 값 반환 (응답 확인) | 일요일에도 갱신 (응답 확인) | 값 없음 또는 빈 응답 가능 (`2차 자료`) | `미확인` |
+| 공휴일 | `미확인` | `미확인` | 값 없음 또는 빈 응답 가능 (`2차 자료`) | `미확인` |
+| 과거 환율 | 날짜·기간 조회 가능, 1948년까지 안내 (응답·문서 확인) | 무료 경로 안내 없음 (`미확인`) | `searchdate`로 조회 (`2차 자료`) | 기간 조회 (`2차 자료`) |
+| 호출 한도 | 일·월 한도 없음, 남용 방지 제한은 있으나 수치 미기재 (문서 확인) | 수치 미기재. 초과 시 429, 20분 뒤 해제 (문서 확인) | `미확인` | 월 10,000건 (`2차 자료`) |
+| API 키 | 불필요 (응답 확인) | 불필요 (응답 확인) | 필요 (`2차 자료`) | 필요 (`2차 자료`) |
+| 이용 조건 | 혼합값 무료 사용, 로컬 저장 권장. 개별 제공처 값은 각 제공처 조건 적용 (문서 확인) | **출처 링크 표기 필수, 재배포 금지.** 환율을 프로그램으로 제공하는 제품·서비스에 사용 금지 (문서 확인) | 무료, 이용허락범위 제한 없음 (포털 문서 확인) | `미확인` |
+| 호출 결과 | 호출 완료 | 호출 완료 | 키가 없어 호출하지 않음 | 키가 없어 호출하지 않음 |
+
+한국수출입은행은 기존 도메인(`www.koreaexim.go.kr`)이 2026-04-30 종료 예정으로 공지되어, 새 도메인(`oapi.koreaexim.go.kr`)을 써야 한다. 공식 안내 페이지는 빈 응답을 반환해 읽지 못했다.
+
+**실제 호출 값 (2026-11-01 09:28~09:29 UTC, 일요일)**
+
+| 소스 | 값 기준일 | USD→KRW | EUR→KRW |
+|------|-----------|---------|---------|
+| Frankfurter v2 혼합 | 2026-11-01 | 1,336.38 | 1,493.58 |
+| Frankfurter v2 ECB | 2026-10-30 | 1,335.27 | 1,491.76 |
+| open.er-api.com | 2026-11-01 00:02 UTC 갱신 | 1,334.80 | 1,491.57 |
+| 최대 차이 | | 1.58 (0.12%) | 2.01 (0.13%) |
+
+**과거 날짜 값 (2026-10-15)**
+
+| 소스 | USD→KRW | EUR→KRW |
+|------|---------|---------|
+| Frankfurter v2 혼합 | 1,343.33 | 1,504.66 |
+| Frankfurter ECB | 1,345.90 (v2 `providers=ecb`) | 1,508.48 (v1) |
+| 차이 | 2.57 (0.19%) | 3.82 (0.25%) |
+
+- open.er-api.com은 과거 값을 얻지 못했다. 시험한 경로(`/v6/history/USD/2026/10/15`)는 문서에 있는 경로가 아니라 추측한 경로이며 404였다.
+- 후보 간 차이는 이번 표본에서 0.25% 이내였다. Charizard(987.13달러)에 대입하면 0.12% 차이는 약 1,560원이다.
+- 한국수출입은행·ECOS 값은 호출하지 못해 이 비교에 포함되지 않았다.
+- Frankfurter v1은 지원 중단(deprecated) 상태이지만 계속 제공된다고 안내한다. 응답 형식이 v2와 다르므로 구현은 v2 기준으로 한다.
+
 ## 결론
 
 1차 소스 확정은 4단계에서 한다. 아래는 1단계 근거에 따른 잠정 판단이다.
@@ -172,6 +214,8 @@ TCGCSV가 TCGplayer 데이터를 재공개할 권한이 있는지, TCGplayer 약
 4. **pokemontcg.io는 1차 소스로 부적합하다.** 지원 종료 공지, 신규 키 발급 중단, 오래된 가격, 잦은 서버 오류가 근거이다.
 5. **Scrydex는 유료 대안으로 남긴다.** 이력까지 제공하지만 월 비용이 들고 Cardmarket이 없으며, 재배포 제한의 적용 범위를 검토해야 한다.
 6. **한글판 카드는 해외 API로 해결되지 않는다.** 국내 거래가 소스 판단(3단계)과 함께 카드 식별 방법을 정해야 한다.
+7. **환율은 Frankfurter v2 혼합값이 유력하다.** 키 없이 쓸 수 있고, 과거 날짜와 주말 값을 제공하며, 로컬 저장을 권장한다. 다만 호출 한도 수치와 공휴일 동작은 미확인이고, 혼합값의 산출 방식은 세부 확인이 필요하다.
+8. **환율 대체 소스는 한국수출입은행이 유력하다.** 이용 조건이 가장 명확하지만 키 발급이 필요하고 공식 문서와 실제 응답을 확인하지 못했다. open.er-api.com은 출처 표기 의무와 재배포 금지 조건, 과거 값 부재로 1차·대체 소스에 부적합하다.
 
 ## 적용 방향 (4단계에서 확정)
 
@@ -179,6 +223,7 @@ TCGCSV가 TCGplayer 데이터를 재공개할 권한이 있는지, TCGplayer 약
 - **#5 카탈로그 수집기**: 언어별 ID 체계가 다르므로, 영어판과 일본·한글판의 연결을 ID 일치로 가정하지 않는다.
 - **#6 해외 시세 수집기**: 소스별 갱신일을 저장해 오래된 가격을 현재가로 표시하지 않는다. 상품 연결 오류를 잡기 위한 이상치 점검이 필요하다.
 - **초기 이력**: TCGCSV 압축 파일을 쓸 수 있으면 TCGplayer 이력을 2024-02-08까지 소급할 수 있다. 사용 여부는 이용 조건 검토 후 결정한다.
+- **환율 저장 (#4, #6)**: 환율 값과 함께 값 기준일과 제공처를 저장해, 원화 환산가를 나중에 다시 계산하고 설명할 수 있게 한다. 환율이 없는 날에 대비해 직전 값을 사용하는 규칙이 필요하다.
 
 ## 참고 자료
 
@@ -188,3 +233,7 @@ TCGCSV가 TCGplayer 데이터를 재공개할 권한이 있는지, TCGplayer 약
 - pokemontcg.io 문서: https://docs.pokemontcg.io/ , https://docs.pokemontcg.io/getting-started/rate-limits , https://docs.pokemontcg.io/getting-started/authentication , https://docs.pokemontcg.io/api-reference/cards/card-object , https://docs.pokemontcg.io/api-reference/cards/search-cards
 - Scrydex: https://scrydex.com/pricing , https://scrydex.com/terms , https://scrydex.com/docs/getting-started/prices , https://scrydex.com/docs/getting-started/best-practices , https://scrydex.com/docs/pokemon/price-history
 - TCGCSV: https://tcgcsv.com/ , https://tcgcsv.com/faq , https://tcgcsv.com/docs
+- Frankfurter: https://frankfurter.dev/ , https://frankfurter.dev/docs/ , https://api.frankfurter.dev/v2/providers
+- ExchangeRate-API: https://www.exchangerate-api.com/docs/free , https://www.exchangerate-api.com/terms
+- 한국수출입은행 공공데이터포털 안내: https://www.data.go.kr/data/3068846/openapi.do
+- 2차 자료 (공식 문서 아님): https://kora1492.tistory.com/79 , https://homey.app/ko-kr/app/com.yuji.exchange/한국-환율/ , https://clawhub.ai/chloepark85/korea-eximbank-exchange-cli , https://bcuts.tistory.com/293 , https://pypi.org/project/ecos-api/
