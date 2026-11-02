@@ -17,3 +17,6 @@ src/frontend/dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# 작업지시자 참고 자료 (약관 원문, 개인 정보 포함 문서)
+docs/
