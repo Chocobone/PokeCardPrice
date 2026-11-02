@@ -1,0 +1,13 @@
+# sqlc 설정. 실행: docker compose exec backend go tool sqlc generate
+# 스키마는 goose 마이그레이션 디렉터리를 그대로 읽는다.
+# 첫 쿼리와 생성 코드, numeric 등 타입 overrides 는 #4에서 추가한다.
+version: "2"
+sql:
+  - engine: postgresql
+    schema: migrations
+    queries: internal/db/queries
+    gen:
+      go:
+        package: dbq
+        out: internal/db/dbq
+        sql_package: pgx/v5

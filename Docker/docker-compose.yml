@@ -39,6 +39,25 @@ services:
       db:
         condition: service_healthy
 
+  # 시세 수집기. backend 와 같은 이미지·소스를 쓰고 실행 대상(APP)만 다르다.
+  collector:
+    build: ./backend
+    image: pokecardprice-backend-dev
+    restart: unless-stopped
+    environment:
+      APP: collector
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable
+      TZ: Asia/Seoul
+      # 개발 중 일정 대신 짧은 간격으로 실행하려면 .env 에 COLLECTOR_INTERVAL=30s 처럼 지정한다.
+      COLLECTOR_INTERVAL: ${COLLECTOR_INTERVAL:-}
+    volumes:
+      - ../src/backend:/app
+      - go-mod:/go/pkg/mod
+      - go-build:/root/.cache/go-build
+    depends_on:
+      db:
+        condition: service_healthy
+
   frontend:
     build: ./frontend
     image: pokecardprice-frontend-dev

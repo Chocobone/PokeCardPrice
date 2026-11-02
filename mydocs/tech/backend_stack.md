@@ -2,7 +2,7 @@
 
 > **작성일**: 2026-11-02
 > **관련 타스크**: [#3](https://github.com/Chocobone/PokeCardPrice/issues/3) 백엔드 기술 선정
-> **상태**: 1~3단계 작성 완료. 선정 결과는 "결론" 절 참고 (작업지시자 승인 대기)
+> **상태**: 완료. 선정 결과는 "결론" 절 참고 (2026-11-02 작업지시자 승인, 4단계에서 적용)
 
 ---
 
@@ -285,11 +285,16 @@ src/backend/
 |------|------|
 | `Docker/docker-compose.yml` | `collector` 서비스 추가 (backend와 같은 이미지·볼륨, 실행 대상만 다름) |
 | `Docker/backend/entrypoint.sh` | 실행할 `cmd/` 이름을 환경 변수로 받아 빌드·실행 (기본값 `server`) |
-| 도구 | sqlc·goose CLI는 `go get -tool`로 `go.mod`에 버전 고정, `go tool sqlc`, `go tool goose`로 실행 (Go 1.24 이상 기능) |
+| 도구 | sqlc CLI는 `go get -tool`로 `go.mod`에 버전 고정해 `go tool sqlc`로 실행 (Go 1.24 이상 기능). goose CLI는 쓰지 않고 `cmd/migrate`(goose 라이브러리)로 상태 확인·되돌리기 (4단계에서 변경, 아래 참고) |
 | `CLAUDE.md` | 수집기 재시작·수동 실행, 마이그레이션 상태 확인·되돌리기, sqlc 생성 명령 추가 |
 
 - 금액 타입(`numeric`의 Go 타입)과 sqlc `overrides`는 #4에서 정한다.
 - 입력 검증 방식(직접 작성 또는 go-playground/validator 연결)은 #8에서 정한다.
+
+### 4단계 적용 시 변경 사항
+
+- **goose CLI 미사용**: `go get -tool`로 goose CLI를 넣으면 CLI가 지원하는 모든 DB 드라이버(ClickHouse, Azure SDK 등)가 `go.mod`에 들어가 `go.mod`가 56줄에서 112줄로 늘었다. 대신 이미 의존하는 goose 라이브러리로 `cmd/migrate`(status, up, down)를 만들었다. 최종 `go.mod`는 66줄이다.
+- **CORS 미들웨어 미적용**: 프론트엔드는 Vite 프록시로 같은 출처에서 호출하므로 지금은 필요 없다. 배포 구성(#16)에서 출처가 갈라지면 추가한다.
 
 ## 참고 자료
 
