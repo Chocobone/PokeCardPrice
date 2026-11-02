@@ -18,7 +18,7 @@
 | 영역 | 기술 |
 |------|------|
 | 프론트엔드 | Vite + Vue 3 |
-| 백엔드 | Go (`net/http`) |
+| 백엔드 | Go, Echo v5, sqlc + pgx, goose(마이그레이션), gocron(수집 일정) |
 | DB | PostgreSQL 18 |
 | 개발 환경 | Docker Compose |
 
@@ -27,16 +27,16 @@
 ```
 PokeCardPrice/
 ├── Docker/                 ← 개발 컨테이너 정의
-│   ├── docker-compose.yml  ← db, backend, frontend 서비스
+│   ├── docker-compose.yml  ← db, backend, collector, frontend 서비스
 │   ├── .env.example        ← 환경 변수 예시 (.env로 복사해 사용)
 │   ├── backend/            ← Go 개발 이미지
 │   └── frontend/           ← Node.js 개발 이미지
 ├── src/
-│   ├── backend/            ← Go API 서버
-│   │   ├── cmd/server/     ← 진입점
-│   │   └── internal/       ← 내부 패키지
+│   ├── backend/            ← Go API 서버·수집기
+│   │   ├── cmd/            ← 진입점 (server, collector, migrate)
+│   │   ├── internal/       ← 내부 패키지
+│   │   └── migrations/     ← DB 마이그레이션 (goose)
 │   └── frontend/           ← Vue 웹 앱
-├── docs/                   ← 텀프로젝트 계획서
 └── mydocs/                 ← 작업 문서 (계획서, 보고서, 기술 조사)
 ```
 
@@ -47,7 +47,7 @@ PokeCardPrice/
 ```bash
 cd Docker
 cp .env.example .env            # 최초 1회, POSTGRES_PASSWORD 변경
-docker compose up -d --build    # db → backend → frontend 기동
+docker compose up -d --build    # db → backend·collector → frontend 기동
 docker compose ps               # 상태 확인
 ```
 
@@ -65,7 +65,8 @@ docker compose ps               # 상태 확인
 # Docker/ 폴더에서 실행
 docker compose exec backend go test ./...     # 백엔드 테스트
 docker compose exec backend go build ./...    # 백엔드 빌드
-docker compose restart backend                # Go 소스 변경 반영
+docker compose restart backend collector      # Go 소스 변경 반영
+docker compose exec backend go run ./cmd/migrate   # 마이그레이션 상태
 docker compose exec frontend npm run build    # 프론트엔드 빌드 (화면은 HMR로 자동 반영)
 docker compose down                           # 중지 (데이터 유지)
 docker compose down -v                        # 중지 + DB 초기화
