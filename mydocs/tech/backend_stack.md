@@ -2,7 +2,7 @@
 
 > **작성일**: 2026-11-02
 > **관련 타스크**: [#3](https://github.com/Chocobone/PokeCardPrice/issues/3) 백엔드 기술 선정
-> **상태**: 1단계(웹 프레임워크), 2단계(DB 접근·마이그레이션) 작성. 스케줄러와 선정 결과는 3단계에서 추가한다.
+> **상태**: 1~3단계 작성 완료. 선정 결과는 "결론" 절 참고 (작업지시자 승인 대기)
 
 ---
 
@@ -195,6 +195,102 @@ Echo는 최신 메이저인 v5를 대상으로 했다. 릴리스 날짜는 Go �
 4. **마이그레이션은 goose가 유력하다.** 실패해도 dirty 상태가 남지 않아 수동 복구가 필요 없고, 적용할 것이 없을 때 오류를 반환하지 않으며, 한 파일에 up·down을 둔다. sqlc도 goose 형식을 읽는다.
 
 
+### 4. 스케줄러
+
+#### 실행 위치
+
+| 비교 항목 | A. API 서버 내장 | B. 별도 수집 프로세스 (`cmd/collector`) |
+|-----------|------------------|------------------------------------------|
+| 장애 격리 | 수집 중 패닉·메모리 증가가 API 응답에 영향. 패닉 복구를 빠뜨리면 서버가 함께 종료 | 수집기가 죽어도 API는 계속 응답 |
+| 재시작 | 개발 중 Go 소스를 바꿀 때마다 `restart backend`를 하므로 진행 중인 수집이 자주 끊김 | API를 재시작해도 수집은 계속됨. 수집기만 따로 재시작 |
+| 중복 실행 | 서버 인스턴스가 늘면 같은 작업이 겹침. 잠금 필요 | 수집기 1개만 띄우면 겹치지 않음. 안전장치로 PostgreSQL advisory lock을 둘 수 있음 |
+| 수동 실행 | 관리용 API나 별도 명령이 필요 | `-once` 같은 실행 옵션으로 바로 한 번 실행 |
+| 운영 비용 | 서비스 1개 | compose 서비스 1개 추가, 로그를 따로 확인 (`docker compose logs collector`) |
+| 코드 공유 | 같은 프로세스 | 같은 Go 모듈이라 DB 접근·설정 코드를 그대로 공유 |
+| #16 배포 | 바이너리 1개 | 바이너리 2개 (같은 이미지에서 실행 명령만 다르게 할 수 있음) |
+
+- 수집은 하루 1회 몇 분 걸리는 일괄 작업이고, API는 사용자 요청을 계속 받아야 한다. 성격이 달라 분리하는 편이 장애와 재시작 영향을 줄인다.
+- 마이그레이션은 두 프로세스가 모두 시작 시 실행해도 goose 세션 잠금으로 안전하다(2단계 동시 실행 시험).
+
+#### 일정 표현
+
+**후보와 버전**
+
+| 후보 | 버전 | 릴리스 | 비고 |
+|------|------|--------|------|
+| `time.Ticker` + 직접 계산 | Go 1.27.3 | - | 표준 라이브러리 |
+| `github.com/robfig/cron/v3` | v3.0.1 | **2020-01-04** | 이후 릴리스 없음 |
+| `github.com/go-co-op/gocron/v2` | v2.23.0 | 2026-10-26 | |
+
+**예제 시나리오** (세 후보 공통 코드에 일정 부분만 다르게 구현)
+
+- 3초 걸리는 수집 작업을 2초 간격으로 예약 → 겹쳐 실행되면 안 됨
+- 7초에 SIGTERM → 진행 중인 작업이 끝난 뒤 종료되어야 함
+- 매일 05:30 KST 일정의 다음 실행 시각 계산 (TCGCSV 갱신 20:00 UTC = 05:00 KST 이후)
+
+**결과**
+
+| 항목 | `time.Ticker` | robfig/cron | gocron v2 |
+|------|---------------|-------------|-----------|
+| 겹침 방지 | 고루틴 하나에서 순차 실행하므로 자연히 방지 | `SkipIfStillRunning` 래퍼 | `WithSingletonMode` |
+| 최대 동시 실행 | 1 | 1 | 1 |
+| SIGTERM 시 진행 중 작업 대기 | 대기함. **단, 처음 구현은 종료 신호 뒤에 작업을 하나 더 시작함** (아래 참고) | 대기함 (`Stop()`이 반환하는 컨텍스트) | 대기함 (`Shutdown`, `WithStopTimeout` 기본 10초) |
+| 작업에 취소 신호 전달 | 직접 구현 | 없음 (작업 함수에 컨텍스트 인자 없음) | 작업 첫 인자가 `context.Context`면 종료 시 취소됨 (`ctx canceled=true` 확인) |
+| 매일 05:30 KST | 직접 계산 함수 (8줄) | `CRON_TZ=Asia/Seoul 30 5 * * *` | `DailyJob(1, NewAtTimes(NewAtTime(5, 30, 0)))` + `WithLocation` |
+| 다음 실행 시각 계산 | 정확 (2026-11-03T05:30+09:00) | 정확 | 정확 (단, 임의 시각 기준 계산 API는 없고 `NextRun`만 있음) |
+| 실패 이벤트 처리 | 직접 구현 | `Recover` 래퍼 | `AfterJobRunsWithError` 등 이벤트 리스너 |
+| 바이너리에 포함된 의존 모듈 | 0 | 1 | 4 |
+| 일정 코드 (`sched.go`) | 42줄 | 32줄 | 42줄 |
+
+#### 확인한 주의점
+
+- **`time.Ticker` 직접 구현은 종료 경합이 생기기 쉽다.** 작업이 끝났을 때 종료 신호와 다음 틱이 함께 준비되어 있으면 `select`가 틱을 고를 수 있다. 처음 구현에서 SIGTERM 뒤에 작업 3이 새로 시작되어 종료가 3초 늦어졌다. 틱을 받은 뒤 `ctx.Err()`를 다시 확인해 고쳤고, 3회 반복해 재현되지 않았다.
+- **robfig/cron은 2020년 이후 릴리스가 없다.** 동작은 정상이지만 유지되지 않는 의존성이다.
+- **시간대 데이터가 필요하다.** `Asia/Seoul`을 읽으려면 이미지에 `tzdata`가 있거나 `time/tzdata`를 임포트해야 한다. 현재 개발 이미지는 `tzdata`를 설치하므로 문제없고, #16 운영 이미지에서 확인해야 한다.
+
+### 3단계 판단
+
+1. **실행 위치는 B(별도 수집 프로세스)로 한다.** 개발 중 잦은 API 재시작이 수집을 끊지 않고, 수집 장애가 API에 번지지 않는다.
+2. **일정 표현은 gocron v2로 한다.** 겹침 방지, 시간대, 종료 대기, 작업 취소 전달을 옵션으로 제공하고 유지되고 있다. 직접 구현은 의존성이 없지만 종료 경합 같은 버그를 직접 다뤄야 하고, robfig/cron은 유지되지 않는다.
+
+## 결론
+
+### 선정 결과
+
+| 항목 | 선정 | 버전 | 근거 | 탈락 후보와 이유 |
+|------|------|------|------|------------------|
+| 웹 프레임워크 | **Echo v5** | v5.4.4 | 로그·복구·CORS 내장, 핸들러가 `error`를 반환해 오류 응답을 한 곳에서 처리, 바이너리 의존 모듈 2개 | Gin: 의존성·바이너리가 가장 큼(19개, 20.6 MiB), 검증 메시지 변환 필요. `net/http`: 미들웨어·404·405 JSON 처리를 직접 유지해야 함 |
+| DB 접근 | **sqlc + pgx** | sqlc v1.31.1, pgx v5.12.0 | SQL을 생성 단계에서 검사하고 타입 있는 함수를 생성, 런타임은 pgx(`COPY`, 트랜잭션), 마이그레이션 파일을 스키마로 읽음 | GORM: 주요 집계를 결국 SQL로 작성, 대량 저장이 `INSERT`. pgx 직접 사용: sqlc로 어려운 쿼리에만 보조로 사용 |
+| 마이그레이션 | **goose** | v3.29.0 | 실패 시 이전 버전 유지(dirty 없음), 적용할 것이 없어도 오류 없음, up·down 한 파일, `go:embed` 지원 | golang-migrate: 실패 후 dirty 상태로 수동 `Force` 필요, `ErrNoChange` 처리 필요 |
+| 스케줄러 실행 위치 | **별도 수집 프로세스** (`cmd/collector`) | - | 장애 격리, API 재시작과 무관한 수집, 수동 실행 쉬움 | API 서버 내장: 개발 중 재시작마다 수집이 끊기고 장애가 API로 번짐 |
+| 일정 표현 | **gocron v2** | v2.23.0 | 겹침 방지·시간대·종료 대기·취소 전달 내장, 유지 중 | robfig/cron: 2020년 이후 릴리스 없음. `time.Ticker`: 종료 경합 등을 직접 처리해야 함 |
+
+### 4단계 적용안
+
+```
+src/backend/
+├── cmd/
+│   ├── server/main.go          ← Echo 라우터, pgx 연결 풀, 시작 시 마이그레이션
+│   └── collector/main.go       ← gocron 일정 등록(매일 05:30 KST, 빈 작업), -once 옵션, 시작 시 마이그레이션
+├── internal/
+│   ├── server/                 ← Echo 라우트, 공통 오류 처리기, /healthz DB 확인
+│   ├── db/                     ← 연결 풀 생성, goose 실행(세션 잠금)
+│   └── scheduler/              ← gocron 생성·종료 래퍼
+├── migrations/
+│   └── 00001_init.sql          ← 빈 초기 마이그레이션 (테이블은 #4)
+└── sqlc.yaml                   ← schema: migrations, 생성 코드는 #4에서 첫 쿼리와 함께 생성
+```
+
+| 변경 | 내용 |
+|------|------|
+| `Docker/docker-compose.yml` | `collector` 서비스 추가 (backend와 같은 이미지·볼륨, 실행 대상만 다름) |
+| `Docker/backend/entrypoint.sh` | 실행할 `cmd/` 이름을 환경 변수로 받아 빌드·실행 (기본값 `server`) |
+| 도구 | sqlc·goose CLI는 `go get -tool`로 `go.mod`에 버전 고정, `go tool sqlc`, `go tool goose`로 실행 (Go 1.24 이상 기능) |
+| `CLAUDE.md` | 수집기 재시작·수동 실행, 마이그레이션 상태 확인·되돌리기, sqlc 생성 명령 추가 |
+
+- 금액 타입(`numeric`의 Go 타입)과 sqlc `overrides`는 #4에서 정한다.
+- 입력 검증 방식(직접 작성 또는 go-playground/validator 연결)은 #8에서 정한다.
+
 ## 참고 자료
 
 - Go `net/http` ServeMux 패턴: https://pkg.go.dev/net/http#ServeMux
@@ -205,3 +301,5 @@ Echo는 최신 메이저인 v5를 대상으로 했다. 릴리스 날짜는 Go �
 - GORM: https://gorm.io/docs/
 - golang-migrate: https://github.com/golang-migrate/migrate
 - goose: https://github.com/pressly/goose , https://pressly.github.io/goose/
+- gocron v2: https://github.com/go-co-op/gocron , https://pkg.go.dev/github.com/go-co-op/gocron/v2@v2.23.0
+- robfig/cron: https://github.com/robfig/cron
