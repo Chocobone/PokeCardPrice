@@ -4,9 +4,11 @@ go 1.27.3
 
 require (
 	github.com/go-co-op/gocron/v2 v2.23.0
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.12.0
 	github.com/labstack/echo/v5 v5.4.4
 	github.com/pressly/goose/v3 v3.29.0
+	github.com/shopspring/decimal v1.6.0
 )
 
 require (
@@ -19,7 +21,6 @@ require (
 	github.com/fatih/structtag v1.2.0 // indirect
 	github.com/go-sql-driver/mysql v1.10.1 // indirect
 	github.com/google/cel-go v0.28.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
