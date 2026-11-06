@@ -2,7 +2,7 @@
 
 > **작성일**: 2026-11-06
 > **관련 타스크**: [#4](https://github.com/Chocobone/PokeCardPrice/issues/4) DB 스키마 설계 및 마이그레이션
-> **상태**: 1단계(요구 사항·엔터티·결정 사항) 승인. 상세 정의와 규모 추정은 2단계에서 추가한다.
+> **상태**: 1·2단계 승인. 3단계에서 마이그레이션으로 옮긴다.
 
 ---
 
@@ -31,13 +31,13 @@
 | R7 | #4 | 사용자 | `users` | 인증 관련 추가 컬럼·테이블은 #9 |
 | R8 | #4 | 컬렉션 | `collection_items` | |
 | R9 | #4 | 시계열 조회용 인덱스 | `price_history` 인덱스 | 2단계에서 대표 쿼리로 확정 |
-| R10 | #2 | 카드 언어 (`en`, `ja`, `ko`) | `sets.language` | 카드는 세트의 언어를 따른다. 검색 필터용 비정규화 여부는 2단계 |
+| R10 | #2 | 카드 언어 (`en`, `ja`, `ko`) | `sets.language`, `cards.language` | 2단계: `cards`에도 두고 복합 외래 키 `(set_id, language)`로 세트와 어긋나지 않게 한다 |
 | R11 | #2 | TCGdex 카드 ID | `cards.tcgdex_id` | 카탈로그 원천이라 카드에 직접 둔다 |
 | R12 | #2 | TCGplayer `productId`+`subTypeName` 복합 키 | `external_ids (external_id, external_sub_id)` | 변형 단위로 연결 |
 | R13 | #2 | Cardmarket 상품 ID | `external_ids` | 변형 단위로 연결 |
 | R14 | #2 | 가격 이력: 카드 변형 단위 | `price_history.card_variant_id` | |
-| R15 | #2 | 가격 이력: 소스, 통화, 원 가격, 가격 필드 종류 | `price_history` 컬럼 | 통화는 `USD`·`EUR`·`KRW` |
-| R16 | #2 | 가격 이력: 소스 갱신일, 수집일 | `price_history.price_date`, `collected_at` | 유일 키에 쓰는 날짜는 2단계에서 확정 (5절 Q2) |
+| R15 | #2 | 가격 이력: 소스, 통화, 원 가격, 가격 필드 종류 | `price_history` 컬럼, 통화는 `price_sources.currency` | 2단계: 넓은 형태로 바꿔 가격 필드 종류는 컬럼이 된다 (8절) |
+| R16 | #2 | 가격 이력: 소스 갱신일, 수집일 | `price_history.price_date`, `source_updated_at`, `collected_at` | 유일 키의 날짜는 소스 기준일 (Q2 결정) |
 | R17 | #2 | 가격 성격 값 4종 (`판매가`, `참고가(일본판 환산)`, `사용자 등록가`, `관리자 입력가`) | `price_sources.price_kind` CHECK | |
 | R18 | #2 | 환율: 통화쌍, 값, 값 기준일, 제공처 | `fx_rates` 컬럼 | |
 | R19 | #2 | 사용자 거래가: 사용자, 카드, 가격(KRW), 거래일, 상태 등급, 검증 상태 | `user_trades` | |
@@ -234,6 +234,8 @@ erDiagram
 
 **잠정 선정안: 긴 형태.** 단, 행 수가 문제가 되면 **저장할 필드를 소스별 대표 필드로 줄이는 것**을 먼저 검토한다. 2단계에서 두 형태의 1년치 크기를 `poc_task4`에서 실제로 재서 확정한다.
 
+> **2단계 측정 결과로 넓은 형태로 바꾼다.** 근거는 8절이다.
+
 #### D4. 금액 Go 타입 (sqlc `overrides`)
 
 sqlc 기본 생성 결과: `numeric` → `pgtype.Numeric`, `date` → `pgtype.Date`, `timestamptz` → `pgtype.Timestamptz` (NULL 허용 여부와 상관없이 같은 타입).
@@ -277,20 +279,312 @@ DB 쪽 정밀도는 2단계에서 정한다. 현재 후보는 가격 `numeric(14
 | Q3 | 일본판 참고가(#7 A안)를 KRW로 **저장**할지, **조회할 때 계산**할지 | **조회할 때 계산한다.** 일본판 가격(USD·EUR)은 이미 `price_history`에 있고, 환산은 `fx_rates`로 언제든 다시 할 수 있다. 저장하면 같은 정보를 두 번 갖게 되고, 환율을 고치면 다시 계산해야 한다. API는 계산 결과를 가격 성격 `참고가(일본판 환산)`로 표시한다 | **#2에서 정한 "환산해 저장" 방침을 바꾸는 것**. 승인되면 #7 A안은 저장 작업 대신 조회 쿼리가 되고, `price_sources`에 `jp_reference` 행은 표시용으로만 남긴다 |
 | Q4 | 컬렉션 기간별 증감(#10)을 **현재 보유 수량 기준**으로 계산할지 | **현재 보유 수량 기준**으로 계산한다(현재 수량 × 날짜별 가격). 보유 이력 테이블은 두지 않는다 | 카드를 언제 샀는지를 반영한 손익은 계산할 수 없다. 필요하면 #10에서 `acquired_at`·매입가 컬럼을 추가한다 |
 
+### 6. 상세 정의 (2단계)
+
+아래 DDL이 3단계 마이그레이션의 기준이다. `poc_task4`에서 이 DDL로 12개 테이블을 모두 만들고 실제 카탈로그(TCGdex 세트 335개, 카드 36,756장)를 넣어 확인했다.
+구현 계획서는 테이블마다 컬럼 표를 쓰기로 했으나, 컬럼·제약을 표와 DDL에 이중으로 적으면 어긋나기 쉬워 DDL을 정의로 삼고 판단 근거만 표로 정리한다.
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+
+CREATE TABLE sets (
+  id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  language     text NOT NULL CONSTRAINT sets_language_check CHECK (language IN ('en','ja','ko')),
+  tcgdex_id    text NOT NULL,
+  name         text NOT NULL,
+  release_date date,
+  card_count   integer,
+  logo_url     text,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  updated_at   timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT sets_language_tcgdex_id_key UNIQUE (language, tcgdex_id),
+  CONSTRAINT sets_id_language_key UNIQUE (id, language)
+);
+
+CREATE TABLE cards (
+  id             bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  set_id         bigint NOT NULL,
+  language       text NOT NULL,
+  tcgdex_id      text NOT NULL,
+  local_id       text NOT NULL,
+  name           text NOT NULL,
+  rarity         text,
+  image_url      text,
+  dex_ids        integer[],
+  has_ko_edition boolean NOT NULL DEFAULT false,
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT cards_set_id_language_fkey FOREIGN KEY (set_id, language) REFERENCES sets (id, language) ON DELETE RESTRICT,
+  CONSTRAINT cards_language_tcgdex_id_key UNIQUE (language, tcgdex_id),
+  CONSTRAINT cards_set_id_local_id_key UNIQUE (set_id, local_id),
+  CONSTRAINT cards_has_ko_edition_check CHECK (NOT has_ko_edition OR language = 'ja')
+);
+CREATE INDEX cards_name_trgm_idx ON cards USING gin (name gin_trgm_ops);
+
+CREATE TABLE card_variants (
+  id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  card_id    bigint NOT NULL REFERENCES cards (id) ON DELETE CASCADE,
+  variant    text NOT NULL CONSTRAINT card_variants_variant_check CHECK (variant IN
+               ('normal','holofoil','reverse_holofoil','first_edition','first_edition_holofoil','unlimited','unlimited_holofoil')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT card_variants_card_id_variant_key UNIQUE (card_id, variant)
+);
+
+CREATE TABLE card_links (
+  card_id        bigint PRIMARY KEY REFERENCES cards (id) ON DELETE CASCADE,
+  linked_card_id bigint NOT NULL REFERENCES cards (id) ON DELETE CASCADE,
+  method         text NOT NULL CONSTRAINT card_links_method_check CHECK (method IN ('auto','manual')),
+  created_at     timestamptz NOT NULL DEFAULT now(),
+  updated_at     timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT card_links_not_self_check CHECK (card_id <> linked_card_id)
+);
+CREATE INDEX card_links_linked_card_id_idx ON card_links (linked_card_id);
+
+CREATE TABLE price_sources (
+  id          smallint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  code        text NOT NULL CONSTRAINT price_sources_code_key UNIQUE,
+  name        text NOT NULL,
+  price_kind  text NOT NULL CONSTRAINT price_sources_price_kind_check CHECK (price_kind IN ('sale','jp_reference','user','admin')),
+  currency    text NOT NULL CONSTRAINT price_sources_currency_check CHECK (currency IN ('USD','EUR','KRW')),
+  attribution text
+);
+INSERT INTO price_sources (code, name, price_kind, currency, attribution) VALUES
+  ('tcgcsv',            'TCGplayer (TCGCSV)',  'sale',         'USD', 'TCGplayer 가격 (TCGCSV 경유)'),
+  ('tcgdex_cardmarket', 'Cardmarket (TCGdex)', 'sale',         'EUR', 'Cardmarket 가격 (TCGdex 경유)'),
+  ('jp_reference',      '일본판 환산 참고가',   'jp_reference', 'KRW', '일본판 가격 원화 환산 (Frankfurter 환율)'),
+  ('user_aggregate',    '사용자 등록가 집계',   'user',         'KRW', NULL),
+  ('admin',             '관리자 입력가',        'admin',        'KRW', NULL);
+
+CREATE TABLE external_ids (
+  source_id       smallint NOT NULL REFERENCES price_sources (id),
+  external_id     text NOT NULL,
+  external_sub_id text NOT NULL DEFAULT '',
+  card_variant_id bigint NOT NULL REFERENCES card_variants (id) ON DELETE CASCADE,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  updated_at      timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (source_id, external_id, external_sub_id)
+);
+CREATE INDEX external_ids_card_variant_id_idx ON external_ids (card_variant_id);
+
+CREATE TABLE price_history (
+  card_variant_id   bigint NOT NULL REFERENCES card_variants (id) ON DELETE CASCADE,
+  price_date        date NOT NULL,
+  source_id         smallint NOT NULL REFERENCES price_sources (id),
+  sample_count      integer,
+  collected_at      timestamptz NOT NULL DEFAULT now(),
+  source_updated_at timestamptz,
+  price             numeric(12,2) NOT NULL,
+  price_basis       text NOT NULL,
+  low numeric(12,2), mid numeric(12,2), high numeric(12,2), market numeric(12,2), direct_low numeric(12,2),
+  avg numeric(12,2), trend numeric(12,2), avg1 numeric(12,2), avg7 numeric(12,2), avg30 numeric(12,2),
+  PRIMARY KEY (card_variant_id, source_id, price_date),
+  CONSTRAINT price_history_price_basis_check CHECK (price_basis IN ('market','mid','low','trend','avg','median','manual')),
+  CONSTRAINT price_history_price_check CHECK (price >= 0),
+  CONSTRAINT price_history_sample_count_check CHECK (sample_count IS NULL OR sample_count > 0)
+);
+CREATE INDEX price_history_source_id_price_date_idx ON price_history (source_id, price_date) INCLUDE (card_variant_id, price);
+
+CREATE TABLE fx_rates (
+  base_currency  text NOT NULL CONSTRAINT fx_rates_base_currency_check CHECK (base_currency IN ('USD','EUR','KRW')),
+  quote_currency text NOT NULL CONSTRAINT fx_rates_quote_currency_check CHECK (quote_currency IN ('USD','EUR','KRW')),
+  rate_date      date NOT NULL,
+  provider       text NOT NULL CONSTRAINT fx_rates_provider_check CHECK (provider IN ('frankfurter','koreaexim')),
+  rate           numeric(18,8) NOT NULL CONSTRAINT fx_rates_rate_check CHECK (rate > 0),
+  fetched_at     timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (base_currency, quote_currency, rate_date, provider),
+  CONSTRAINT fx_rates_pair_check CHECK (base_currency <> quote_currency)
+);
+
+CREATE TABLE users (
+  id            uuid PRIMARY KEY DEFAULT uuidv7(),
+  email         text NOT NULL,
+  password_hash text NOT NULL,
+  display_name  text NOT NULL,
+  role          text NOT NULL DEFAULT 'user' CONSTRAINT users_role_check CHECK (role IN ('user','admin')),
+  created_at    timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX users_email_key ON users (lower(email));
+
+CREATE TABLE collection_items (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id         uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  card_variant_id bigint NOT NULL REFERENCES card_variants (id) ON DELETE RESTRICT,
+  condition       text NOT NULL CONSTRAINT collection_items_condition_check CHECK (condition IN ('near_mint','lightly_played','moderately_played','heavily_played','damaged')),
+  quantity        integer NOT NULL CONSTRAINT collection_items_quantity_check CHECK (quantity > 0),
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  updated_at      timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT collection_items_user_variant_condition_key UNIQUE (user_id, card_variant_id, condition)
+);
+
+CREATE TABLE user_trades (
+  id                  bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  user_id             uuid NOT NULL REFERENCES users (id) ON DELETE CASCADE,
+  card_variant_id     bigint NOT NULL REFERENCES card_variants (id) ON DELETE RESTRICT,
+  price_krw           numeric(12,0) NOT NULL CONSTRAINT user_trades_price_krw_check CHECK (price_krw > 0),
+  trade_date          date NOT NULL,
+  condition           text NOT NULL CONSTRAINT user_trades_condition_check CHECK (condition IN ('near_mint','lightly_played','moderately_played','heavily_played','damaged')),
+  verification_status text NOT NULL DEFAULT 'pending' CONSTRAINT user_trades_verification_status_check CHECK (verification_status IN ('pending','accepted','outlier','rejected')),
+  created_at          timestamptz NOT NULL DEFAULT now(),
+  updated_at          timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX user_trades_card_variant_id_trade_date_idx ON user_trades (card_variant_id, trade_date);
+CREATE INDEX user_trades_user_id_idx ON user_trades (user_id);
+
+CREATE TABLE admin_price_entries (
+  id              bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  card_variant_id bigint NOT NULL REFERENCES card_variants (id) ON DELETE RESTRICT,
+  price_krw       numeric(12,0) NOT NULL CONSTRAINT admin_price_entries_price_krw_check CHECK (price_krw > 0),
+  source_note     text NOT NULL,
+  source_url      text,
+  checked_date    date NOT NULL,
+  created_by      uuid REFERENCES users (id) ON DELETE SET NULL,
+  created_at      timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX admin_price_entries_card_variant_id_checked_date_idx ON admin_price_entries (card_variant_id, checked_date);
+
+-- Q5 결정으로 추가 (2026-11-06): 한글 종 이름으로 카드를 찾기 위한 테이블. 데이터 적재는 #5
+CREATE TABLE pokemon_species (
+  dex_id     integer PRIMARY KEY CONSTRAINT pokemon_species_dex_id_check CHECK (dex_id > 0),
+  name_en    text NOT NULL,
+  name_ja    text,
+  name_ko    text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX pokemon_species_name_ko_trgm_idx ON pokemon_species USING gin (name_ko gin_trgm_ops);
+CREATE INDEX cards_dex_ids_idx ON cards USING gin (dex_ids);
+```
+
+**1단계 초안에서 바뀐 점**
+
+| 대상 | 변경 | 근거 |
+|------|------|------|
+| `cards.language` | 추가. `(set_id, language)` 복합 외래 키로 `sets`를 참조 | 검색 필터에 조인이 필요 없고, 세트와 언어가 어긋날 수 없다. 일본판·한글판은 TCGdex 카드 ID가 같아(`SV5K-001`) `(language, tcgdex_id)`로 유일해야 한다 |
+| `cards.dex_ids` | 추가 (`integer[]`, NULL 허용) | TCGdex `dexId`. 한글 이름 검색 보완(9절 Q5)에 쓴다 |
+| `price_sources.currency` | 통화를 가격 행에서 소스로 옮김 | 소스마다 통화가 하나다. 가격 행에 두면 소스와 통화가 어긋난 행이 생길 수 있다 |
+| `price_sources.id` | `smallint` | 행이 5개뿐이고, 1년에 5천만 행인 `price_history`가 참조해 행마다 6바이트를 줄인다 |
+| `price_history` | 넓은 형태 + 대표값(`price`, `price_basis`) | 8절 |
+| `price_history` 기본 키 | 대리 키 없이 `(card_variant_id, source_id, price_date)` | 이 키로만 조회·갱신한다. 대리 키를 두면 인덱스가 하나 더 생긴다 |
+| `fx_rates` 기본 키 | `(base_currency, quote_currency, rate_date, provider)` | 직전 값 조회가 이 인덱스의 역순 스캔으로 끝난다 (7절 S5) |
+| `sets.code` | 삭제 | 일본판·한글판은 TCGdex 세트 ID가 같아(`SV5K`) 별도 코드가 필요 없다 |
+| `user_trades.price_krw`, `admin_price_entries.price_krw` | `numeric(12,0)` | 원화는 소수점이 없다 |
+
+**제약과 삭제 동작**
+
+| 관계 | 삭제 동작 | 근거 |
+|------|-----------|------|
+| 세트 → 카드 | `RESTRICT` | 카탈로그 삭제는 드물고, 실수로 지우면 가격 이력까지 사라진다 |
+| 카드 → 변형, 변형 → 가격·외부 ID, 카드 → 카드 연결 | `CASCADE` | 수집 데이터는 카드에 딸린다 |
+| 변형 → 컬렉션·사용자 거래가·관리자 입력가 | `RESTRICT` | 사용자가 입력한 데이터는 카탈로그 정리로 사라지면 안 된다 |
+| 사용자 → 컬렉션·사용자 거래가 | `CASCADE` | 탈퇴 시 개인 데이터 삭제 |
+| 사용자 → 관리자 입력가 (`created_by`) | `SET NULL` | 입력한 관리자가 없어져도 시세 근거는 남긴다 |
+
+**대표값 규칙 (`price`, `price_basis`)**
+
+넓은 형태에서 소스마다 필드가 다르므로, 화면·순위·평가액이 공통으로 쓸 값을 `price`에 두고 어느 필드에서 왔는지 `price_basis`에 남긴다. 상세 필드는 원래 값 그대로 함께 저장한다.
+
+| 소스 | `price` | 값이 없을 때 |
+|------|---------|--------------|
+| `tcgcsv` | `marketPrice` (`market`) | `midPrice` (`mid`). TCGCSV `marketPrice` NULL 비율은 `Pokemon` 1.8%, `Pokemon Japan` 21.6% (2026-11-06 전체 조회) |
+| `tcgdex_cardmarket` | `trend` | `avg` |
+| `user_aggregate` | 중앙값 (`median`), 건수는 `sample_count` | 행을 만들지 않음 (#7 최소 건수) |
+| `admin` | 입력값 (`manual`) | - |
+
+- `jp_reference`는 Q3 결정에 따라 `price_history`에 행을 만들지 않는다. 표시 이름·출처 문구용으로 `price_sources`에만 둔다.
+- 대체 필드의 순서는 #6에서 바꿀 수 있다. 바꾸어도 `price_basis`가 남아 있어 과거 행을 구분할 수 있다.
+
+### 7. 인덱스와 대표 쿼리
+
+`poc_task4`에서 넓은 형태 30일치(2,886,870행), 사용자 1명·보유 200개, 환율 평일 22일치로 측정했다. 시간은 `EXPLAIN ANALYZE`의 실행 시간이다.
+
+| # | 쿼리 | 사용 인덱스 | 실행 시간 |
+|---|------|-------------|-----------|
+| S1 | 변형 1개·소스 1개의 1년 추이 | `price_history_pkey` 범위 스캔 | 0.30 ms (30행) |
+| S2 | 카드 1장의 변형 × 소스별 최신가 (`DISTINCT ON`) | `card_variants_card_id_variant_key` → `price_history_pkey` | 1.07 ms |
+| S3 | 급등 순위: TCGCSV 최신일 대비 7일 전 변동률 상위 20 | `price_history_source_id_price_date_idx` (Index Only Scan, Heap Fetches 0) | **24.5 ms** |
+| S3' | 같은 쿼리, 보조 인덱스 없이 | 순차 스캔 | **174.2 ms** (30일치. 1년이면 행 수에 비례해 늘어남) |
+| S4 | 컬렉션 평가액: 보유 200개 × 최신가 × 최신 환율 | `price_history_pkey` 역순 스캔, `fx_rates_pkey` 역순 스캔 | 3.71 ms |
+| S5 | 주말(11/01) 환율 → 직전 영업일(10/30) 값 | `fx_rates_pkey` | 직전 값 반환 확인 |
+| S6 | 세트 + 번호 검색 (`ja`, `SV5K`, `001`) | `sets_language_tcgdex_id_key` → `cards_set_id_local_id_key` | 0.07 ms |
+| S7 | 이름 검색 `pikachu` (7자) | `cards_name_trgm_idx` | 0.45 ms (243행) |
+| S8 | 이름 검색 `ピカ` (2자) | 순차 스캔 (trigram을 만들 수 없음) | 10.3 ms (74행) |
+
+- 보조 인덱스 `(source_id, price_date) INCLUDE (card_variant_id, price)`는 순위·변동률 쿼리를 위한 것이다. 기본 키만으로는 날짜로 찾을 수 없어 순차 스캔이 된다. 대신 1년에 약 1.9 GB를 더 쓴다(8절).
+- 두 글자 검색어는 36,756장 전체를 순차 스캔해도 약 10 ms라 문제가 없다.
+- `collection_items`는 `(user_id, card_variant_id, condition)` 유일 제약의 인덱스가 사용자별 조회를 맡는다. 측정에서는 행이 200개라 순차 스캔을 골랐다.
+
+### 8. 시세 이력 규모와 형태 확정
+
+**실제 데이터 양 (2026-11-06)**
+
+| 소스 | 확인 방법 | 하루 변형 행 | 값이 있는 가격 필드 |
+|------|-----------|--------------|---------------------|
+| TCGCSV `Pokemon` | 그룹 221개 전체 `prices` 조회 | 45,715 (상품 31,664) | 137,145 (`low`·`mid`·`high`) + `market` 44,875 + `directLow` 17,881 = 199,901 |
+| TCGCSV `Pokemon Japan` | 그룹 461개 전체 조회 | 29,345 (상품 26,430) | 88,035 + `market` 23,019 = 111,054 |
+| TCGdex Cardmarket `en` | 카드 23,736장 중 표본 40장 | 약 42,700 (가격 있는 카드 90% × 정상·holo 2행) | 카드당 10.4 → 약 222,000 |
+| TCGdex Cardmarket `ja` | 카드 12,781장 중 표본 40장 | 약 20,400 (가격 있는 카드 80% × 2행) | 카드당 7.8 → 약 80,000 |
+| **합계** | | **약 138,000** | **약 613,000** |
+
+- TCGCSV 수치는 카드가 아닌 상품(박스·팩 등)을 포함한 상한이다. 수집기는 카드 변형과 연결된 상품만 저장하므로 실제로는 더 적다.
+- TCGCSV 조회는 682회, 요청 간 120 ms, 전용 User-Agent로 했다. TCGdex는 카드 80장을 요청 간 500 ms로 조회했다.
+
+**행당 크기 (`poc_task4` 측정)**
+
+| 형태 | 측정 행 수 | 테이블 | 기본 키 인덱스 | 보조 인덱스 |
+|------|-----------|--------|----------------|-------------|
+| 넓은 형태 (`price_history`) | 2,886,870 (30일) | 337 MB, 행당 122.5 B | 111 MB, 행당 40.3 B | 105 MB, 행당 38.1 B |
+| 긴 형태 (`price_history_long`) | 3,487,175 (7일) | 255 MB, 행당 76.6 B | 160 MB, 행당 48.2 B | 없음 |
+
+**1년 추정**
+
+| 형태 | 1년 행 수 | 테이블 | 인덱스 | 합계 | 보존하는 필드 |
+|------|-----------|--------|--------|------|---------------|
+| **넓은 형태 (선정)** | 5,040만 | 6.2 GB | 4.0 GB (기본 키 2.0 + 보조 1.9) | **약 10 GB** | 전부 |
+| 긴 형태, 전체 필드 | 2억 2,370만 | 17.1 GB | 10.8 GB (기본 키만) | **약 28 GB** + 순위용 인덱스 | 전부 |
+| 긴 형태, 소스별 대표 필드 1개 | 5,040만 | 3.9 GB | 2.4 GB (기본 키만) | 약 6.3 GB + 순위용 인덱스 | 대표값만 |
+
+**결정: 넓은 형태로 바꾼다 (D3 변경).**
+
+1. 같은 필드를 보존할 때 긴 형태의 약 2.8배 공간을 쓴다. 긴 형태는 행마다 헤더와 키(변형·소스·필드 이름·날짜)를 반복한다.
+2. 대표 필드만 남기는 긴 형태는 넓은 형태보다 작지만, Cardmarket `avg7`·`avg30`처럼 다시 만들 수 없는 값을 잃는다. 넓은 형태에서 빈 필드는 NULL 비트맵만 쓴다.
+3. 화면·순위·평가액은 대표값 `price` 하나만 읽으면 되어 쿼리가 단순하다.
+4. 단점은 소스 필드가 늘면 컬럼 추가 마이그레이션이 필요하다는 점이다. 소스가 두 개로 확정되어 있어 받아들일 만하다.
+
+**파티셔닝: 도입하지 않는다.** 1년 5천만 행은 기본 키 범위 스캔(S1·S2·S4)에 영향이 없고, 순위 쿼리(S3)는 날짜 하루치만 읽는다. 다만 다음 두 경우에는 다시 판단한다.
+
+- TCGCSV 일별 압축 파일(2024-02-08~)로 과거 이력을 채우는 경우 (#6): 약 1,000일 × 75,000행 = 7,500만 행, 약 15 GB가 더해진다.
+- 보존 기간을 1년보다 길게 잡는 경우
+
+### 9. 2단계 작업지시자 확인 사항
+
+**Q5·Q6 모두 제안대로 결정 (작업지시자, 2026-11-06).** Q5에 따라 6절 DDL 끝에 `pokemon_species`와 `cards.dex_ids` 인덱스를 더했다.
+
+| # | 사항 | 제안 | 영향 |
+|---|------|------|------|
+| Q5 | **한글 이름 검색이 거의 되지 않는다.** Q1 결정으로 한글 이름이 있는 카드는 TCGdex `ko` 239장뿐이고, `피카츄`·`피카`는 0건이었다 (`ピカチュウ` 63건, `pikachu` 243건) | **포켓몬 종 이름 테이블을 추가한다.** `pokemon_species (dex_id PK, name_ko, name_ja, name_en)`를 두고 `cards.dex_ids`와 연결해, 한글 종 이름으로 일본판·영어판 카드를 찾게 한다. 이번 타스크에서는 테이블과 `dex_ids` 컬럼만 만들고, 데이터 소스(PokeAPI 등)·이용 조건 확인과 적재는 #5, 검색 쿼리는 #8에서 한다 | 테이블 1개 추가 (13개). 트레이너스·에너지 카드는 `dexId`가 없어 한글 검색 대상에서 빠진다 |
+| Q6 | 상태 등급 값 | TCGplayer 기준 5단계 `near_mint`, `lightly_played`, `moderately_played`, `heavily_played`, `damaged`. TCGCSV 가격이 Near Mint 기준이라 비교하기 쉽다. **감정 카드(PSA 등)는 다루지 않는다** | `collection_items`, `user_trades`의 `CHECK`. 국내 거래 관행(S·A·B급)과 다르므로 #13 화면에서 한글 설명이 필요하다 |
+
+**후속 타스크에 넘길 사항 (결정 불필요)**
+
+- #6: TCGdex Cardmarket 가격은 카드 단건 조회에만 있어, 하루 수집에 카드 수만큼(`en`·`ja` 약 3만 6천 회) 요청이 필요하다. 동시성 2, 요청 간격을 두면 수 시간이 걸릴 수 있다.
+- #6: Cardmarket의 `-holo` 필드는 카드 변형이 `normal` + `reverse_holofoil`이면 리버스 홀로, `holofoil`만 있으면 홀로 변형에 넣어야 한다. 연결 규칙은 #6에서 표본으로 확인한다.
+- #5: 한글판 카드 연결(`card_links`)이 한글판 → 일본판 방향인지는 DB 제약으로 막지 않는다. 수집기가 언어를 확인한다.
+
 ## 결론
 
-1. 테이블은 12개로 나눈다: `sets`, `cards`, `card_variants`, `card_links`, `price_sources`, `external_ids`, `price_history`, `fx_rates`, `users`, `collection_items`, `user_trades`, `admin_price_entries`.
+1. 테이블은 13개다(`pokemon_species` 포함): `sets`, `cards`, `card_variants`, `card_links`, `price_sources`, `external_ids`, `price_history`, `fx_rates`, `users`, `collection_items`, `user_trades`, `admin_price_entries`. Q5가 승인되면 `pokemon_species`가 더해져 13개가 된다.
 2. 열거 값은 `text` + `CHECK`로, 가격 소스는 참조 테이블로 한다. `enum`은 값을 되돌릴 수 없어 쓰지 않는다.
-3. 기본 키는 `bigint identity`로 하고, `users`만 `uuidv7()`로 한다.
-4. 가격 이력은 긴 형태를 잠정 선정했다. 2단계에서 크기를 재서 확정한다.
-5. 금액은 DB에서 `numeric`이다. Go 타입은 4단계에서 정한다.
+3. 기본 키는 `bigint identity`로 하고, `users`만 `uuidv7()`, `price_sources`는 `smallint`로 한다.
+4. **가격 이력은 넓은 형태로 확정한다** (2단계 측정). 1년 약 5천만 행, 약 10 GB로 추정하며 파티셔닝은 하지 않는다. 화면·순위는 대표값 `price`를 읽는다.
+5. 금액은 DB에서 `numeric(12,2)`(원화 원본 입력은 `numeric(12,0)`), 환율은 `numeric(18,8)`이다. Go 타입은 4단계에서 정한다.
 6. 사용자 거래가와 관리자 입력가는 원본 테이블에 두고, 시세로 쓰는 값만 `price_history`에 넣는다.
 7. Q1~Q4는 제안대로 결정되었다 (2026-11-06). Q3에 따라 일본판 참고가는 저장하지 않고 조회할 때 환산하며, #7 A안은 조회 쿼리로 바뀐다.
+8. Q5·Q6은 제안대로 결정되었다 (2026-11-06). 한글 이름 검색용 `pokemon_species`를 더해 테이블은 13개이고, 상태 등급은 TCGplayer 5단계이며 감정 카드는 다루지 않는다.
 
 ## 적용 방향
 
-- 2단계: Q1~Q4 결정을 반영해 테이블별 컬럼·제약·인덱스를 확정하고, 가격 이력 규모를 `poc_task4`에서 측정한다.
-- 3단계: 마이그레이션 파일 `00002_catalog.sql`, `00003_prices.sql`, `00004_users.sql`
+- 3단계: 6절 DDL을 마이그레이션 파일 `00002_catalog.sql`(확장, `sets`, `cards`, `card_variants`, `card_links`, Q5 승인 시 `pokemon_species`), `00003_prices.sql`(`price_sources`와 초기 행, `external_ids`, `price_history`, `fx_rates`), `00004_users.sql`(`users`, `collection_items`, `user_trades`, `admin_price_entries`)로 나눈다.
+- 4단계: 7절 대표 쿼리 일부를 sqlc 쿼리로 옮긴다.
 
 ## 참고 자료
 
