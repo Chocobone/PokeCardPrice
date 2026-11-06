@@ -2,7 +2,7 @@
 
 > **작성일**: 2026-11-06
 > **관련 타스크**: [#4](https://github.com/Chocobone/PokeCardPrice/issues/4) DB 스키마 설계 및 마이그레이션
-> **상태**: 1·2단계 승인. 3단계에서 마이그레이션으로 옮긴다.
+> **상태**: 1~3단계 승인, 4단계(10절) 작성. 마이그레이션 `00002`~`00004`, 쿼리 `internal/db/queries/` 반영.
 
 ---
 
@@ -570,21 +570,83 @@ CREATE INDEX cards_dex_ids_idx ON cards USING gin (dex_ids);
 - #6: Cardmarket의 `-holo` 필드는 카드 변형이 `normal` + `reverse_holofoil`이면 리버스 홀로, `holofoil`만 있으면 홀로 변형에 넣어야 한다. 연결 규칙은 #6에서 표본으로 확인한다.
 - #5: 한글판 카드 연결(`card_links`)이 한글판 → 일본판 방향인지는 DB 제약으로 막지 않는다. 수집기가 언어를 확인한다.
 
+### 10. Go 타입과 기본 쿼리 (4단계)
+
+#### 금액 Go 타입 결정 (D4)
+
+세 후보로 같은 쿼리의 sqlc 코드를 생성하고, 임시 DB에서 pgx v5.12.0으로 저장·조회했다 (2026-11-06).
+
+| 확인 항목 | `pgtype.Numeric` (기본) | `string` | `shopspring/decimal` |
+|-----------|------------------------|----------|----------------------|
+| 생성 타입 (NOT NULL / NULL) | `pgtype.Numeric` / 같음 | `string` / `*string` | `decimal.Decimal` / `*decimal.Decimal` |
+| 저장 `1.239` → `numeric(12,2)` | `1.24` | `1.24` | `1.24` |
+| 잘못된 값 | 값을 만들 때 `Scan`이 오류 반환 (문서 기준, 미측정) | DB에서 `22P02` 오류 (`"abc"`). `"1e3"`은 통과 | `RequireFromString`에서 거부 |
+| JSON 출력 | 숫자 `1.24` | 문자열 `"1.24"` (자릿수 유지) | 문자열 `"1.24"`. 뒤 0은 빠짐(`1500.00` → `"1500"`) |
+| Go 산술 | 없음 (`Float64Value()` 변환) | 없음 | 있음 (`Mul`, `Round` 등) |
+| pgx 연결 설정 | 불필요 | 불필요 | **불필요** (`sql.Scanner`·`driver.Valuer`로 동작 확인. `pgx-shopspring-decimal` 어댑터 없이 됨) |
+| 추가 의존성 | 없음 | 없음 | `github.com/shopspring/decimal` 1개 (외부 의존성 없음). goose가 이미 간접 의존 |
+
+**결정: `shopspring/decimal` v1.6.0.**
+
+1. 원화 환산(Q3), 사용자 거래가 이상치 제거(#7), 평가액(#10)을 SQL로 하지 못하는 경우에도 Go에서 정확히 계산할 수 있다. `pgtype.Numeric`과 `string`은 `float64`로 바꿔야 해서 오차가 생긴다.
+2. 타입으로 금액임이 드러나고, 잘못된 문자열이 DB까지 가지 않는다.
+3. 추가 의존성이 하나이고 pgx 연결 설정이 필요 없다.
+
+- 버전: 처음에 v1.4.0으로 고정하자 goose가 v3.29.0에서 v3.28.0으로 내려갔다(goose가 decimal v1.5.0 이상을 요구). 그래서 최신 v1.6.0(2026-10-18)을 쓴다.
+- JSON 형식(문자열/숫자, 소수 자릿수)은 API 응답 구조체에서 정한다(#8). DB 구조체(`dbq`)에는 JSON 태그를 만들지 않는다. `dbq.User`를 그대로 직렬화하면 `password_hash`가 나가기 때문이다.
+
+#### sqlc 설정 (`src/backend/sqlc.yaml`)
+
+| DB 타입 | Go 타입 (NOT NULL / NULL) |
+|---------|---------------------------|
+| `numeric` | `decimal.Decimal` / `*decimal.Decimal` |
+| `uuid` | `uuid.UUID` / `*uuid.UUID` (`github.com/google/uuid` v1.6.0, 기존 간접 의존을 직접 의존으로) |
+| `timestamptz`, `date` | `time.Time` / `*time.Time` |
+| 그 밖의 NULL 허용 컬럼 (`text`, `integer`) | `*string`, `*int32` (`emit_pointers_for_null_types`) |
+
+- 생성 코드에 `pgtype`이 남지 않는다. NULL은 모두 `nil`로 다룬다.
+- `timestamptz`는 `db_type: timestamptz`로 써야 적용된다. `pg_catalog.timestamptz`로 쓰면 무시되어 `pgtype.Timestamptz`가 그대로 생성되었다.
+
+#### 기본 쿼리 (`src/backend/internal/db/queries/`)
+
+| 파일 | 쿼리 | 쓰는 타스크 |
+|------|------|-------------|
+| `catalog.sql` | `UpsertSet`, `UpsertCard`, `UpsertCardVariant`, `GetCard`, `ListCardVariants` | #5, #8 |
+| `prices.sql` | `GetPriceSourceByCode`, `UpsertExternalID`, `FindVariantByExternalID`, `UpsertPriceHistory`(`:batchexec`, pgx 배치), `ListPriceHistory`, `UpsertFxRate`, `GetFxRateOnOrBefore` | #6, #7, #8 |
+| `users.sql` | `CreateUser`, `GetUserByEmail`, `UpsertCollectionItem`, `ListCollectionItems`, `CreateUserTrade` | #9, #10 |
+
+- 저장 쿼리는 모두 `ON CONFLICT ... DO UPDATE`라 수집기를 다시 실행해도 행이 늘지 않는다.
+- `UpsertCard`는 `has_ko_edition`을 바꾸지 않는다. 한글판 연결 작업(#5)이 따로 갱신한다.
+- 순위·변동률·평가액·일본판 환산 쿼리(7절 S2~S4)는 화면 요구가 정해지는 #7·#8·#10에서 추가한다.
+
+#### 후속 타스크 인계
+
+| 타스크 | 넘기는 내용 |
+|--------|-------------|
+| #5 카탈로그 수집기 | `UpsertSet`·`UpsertCard`·`UpsertCardVariant`로 적재. 한글판은 `card_links`(method `auto`)와 `cards.has_ko_edition`. `cards.dex_ids`와 `pokemon_species`(한·일·영 종 이름) 적재, 종 이름 데이터 소스의 이용 조건 확인 |
+| #6 해외 시세 수집기 | 외부 ID는 `external_ids`(TCGplayer `productId` + `subTypeName`). 가격은 `UpsertPriceHistory` 배치로 저장하고 `price_date`는 소스 기준일. 대표값 규칙은 6절 표. Cardmarket `-holo` 필드의 변형 연결 규칙 확인. TCGdex Cardmarket은 하루 약 3만 6천 회 요청 |
+| #7 국내 거래가 | 일본판 참고가는 저장하지 않고 조회 시 환산 (Q3). 사용자 거래가 집계는 `price_history`(소스 `user_aggregate`, `price_basis` `median`, `sample_count`). 관리자 입력은 `admin_price_entries` + `price_history`(소스 `admin`) |
+| #8 시세 API | 가격 성격·통화·출처는 `price_sources`에서 읽는다. 순위 쿼리는 `price_history_source_id_price_date_idx` 사용(7절 S3). 한글 검색은 `pokemon_species.name_ko` → `cards.dex_ids` (`&&` 연산, GIN 인덱스) |
+| #9 인증 | `users`(`uuidv7`, 이메일은 `lower(email)` 유일). 토큰·세션 테이블은 필요 시 마이그레이션 추가 |
+| #10 컬렉션 API | `collection_items`는 변형·상태 등급마다 1행. 사용자 데이터가 있는 변형을 지우면 SQLSTATE `23001`(restrict_violation) |
+
 ## 결론
 
 1. 테이블은 13개다(`pokemon_species` 포함): `sets`, `cards`, `card_variants`, `card_links`, `price_sources`, `external_ids`, `price_history`, `fx_rates`, `users`, `collection_items`, `user_trades`, `admin_price_entries`. Q5가 승인되면 `pokemon_species`가 더해져 13개가 된다.
 2. 열거 값은 `text` + `CHECK`로, 가격 소스는 참조 테이블로 한다. `enum`은 값을 되돌릴 수 없어 쓰지 않는다.
 3. 기본 키는 `bigint identity`로 하고, `users`만 `uuidv7()`, `price_sources`는 `smallint`로 한다.
 4. **가격 이력은 넓은 형태로 확정한다** (2단계 측정). 1년 약 5천만 행, 약 10 GB로 추정하며 파티셔닝은 하지 않는다. 화면·순위는 대표값 `price`를 읽는다.
-5. 금액은 DB에서 `numeric(12,2)`(원화 원본 입력은 `numeric(12,0)`), 환율은 `numeric(18,8)`이다. Go 타입은 4단계에서 정한다.
+5. 금액은 DB에서 `numeric(12,2)`(원화 원본 입력은 `numeric(12,0)`), 환율은 `numeric(18,8)`이다. Go 타입은 `shopspring/decimal`로 정했다 (10절).
 6. 사용자 거래가와 관리자 입력가는 원본 테이블에 두고, 시세로 쓰는 값만 `price_history`에 넣는다.
 7. Q1~Q4는 제안대로 결정되었다 (2026-11-06). Q3에 따라 일본판 참고가는 저장하지 않고 조회할 때 환산하며, #7 A안은 조회 쿼리로 바뀐다.
 8. Q5·Q6은 제안대로 결정되었다 (2026-11-06). 한글 이름 검색용 `pokemon_species`를 더해 테이블은 13개이고, 상태 등급은 TCGplayer 5단계이며 감정 카드는 다루지 않는다.
 
 ## 적용 방향
 
-- 3단계: 6절 DDL을 마이그레이션 파일 `00002_catalog.sql`(확장, `sets`, `cards`, `card_variants`, `card_links`, Q5 승인 시 `pokemon_species`), `00003_prices.sql`(`price_sources`와 초기 행, `external_ids`, `price_history`, `fx_rates`), `00004_users.sql`(`users`, `collection_items`, `user_trades`, `admin_price_entries`)로 나눈다.
-- 4단계: 7절 대표 쿼리 일부를 sqlc 쿼리로 옮긴다.
+- 마이그레이션: `src/backend/migrations/00002_catalog.sql`, `00003_prices.sql`, `00004_users.sql` (6절 DDL과 같음)
+- 쿼리·생성 코드: `src/backend/internal/db/queries/*.sql` → `src/backend/internal/db/dbq/`
+- 테스트: `src/backend/internal/db/migrate_test.go`, `queries_test.go` (테스트 DB `${POSTGRES_DB}_test`)
+- 후속 타스크 인계는 10절 마지막 표
 
 ## 참고 자료
 

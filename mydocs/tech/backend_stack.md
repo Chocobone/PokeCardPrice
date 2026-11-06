@@ -145,7 +145,7 @@ Echo는 최신 메이저인 v5를 대상으로 했다. 릴리스 날짜는 Go �
 
 - **sqlc 생성기는 CGO 없이 컨테이너에서 실행된다.** `go run github.com/sqlc-dev/sqlc/cmd/sqlc@v1.31.1 generate`가 `golang:1.27-alpine3.24`에서 동작했다. 첫 실행은 내려받기와 컴파일로 85초, 이후에는 2.5초였다(`go-build` 캐시 볼륨 사용).
 - **sqlc는 마이그레이션 파일을 스키마로 읽는다.** golang-migrate 형식(`.up.sql`만 사용)과 goose 형식(`-- +goose Down` 이후 무시) 모두 `schema`에 디렉터리를 지정하면 마지막 상태(`set_code` 컬럼 포함)로 코드를 생성했다. 스키마 파일을 따로 관리하지 않아도 된다.
-- **sqlc 기본 타입은 `pgtype`이다.** 금액(`numeric`)을 `pgtype.Numeric`으로 다루기 불편하면 `overrides`로 타입을 지정해야 한다. 금액 타입(문자열, 정수 단위, decimal 라이브러리)은 #4에서 정한다.
+- **sqlc 기본 타입은 `pgtype`이다.** 금액(`numeric`)을 `pgtype.Numeric`으로 다루기 불편하면 `overrides`로 타입을 지정해야 한다. 금액 타입(문자열, 정수 단위, decimal 라이브러리)은 #4에서 정한다. → **#4에서 `shopspring/decimal`로 결정** (`db_schema.md` 10절).
 - **GORM은 이 프로젝트의 주요 쿼리(시계열 집계)를 결국 SQL로 쓴다.** ORM 이점은 단순 CRUD에 한정된다. 대량 저장도 `COPY`가 아닌 `INSERT`이다.
 
 ### 3. 마이그레이션 도구
@@ -288,7 +288,7 @@ src/backend/
 | 도구 | sqlc CLI는 `go get -tool`로 `go.mod`에 버전 고정해 `go tool sqlc`로 실행 (Go 1.24 이상 기능). goose CLI는 쓰지 않고 `cmd/migrate`(goose 라이브러리)로 상태 확인·되돌리기 (4단계에서 변경, 아래 참고) |
 | `CLAUDE.md` | 수집기 재시작·수동 실행, 마이그레이션 상태 확인·되돌리기, sqlc 생성 명령 추가 |
 
-- 금액 타입(`numeric`의 Go 타입)과 sqlc `overrides`는 #4에서 정한다.
+- 금액 타입(`numeric`의 Go 타입)과 sqlc `overrides`는 #4에서 정한다. → #4에서 결정: `numeric` → `decimal.Decimal`, `uuid` → `uuid.UUID`, `timestamptz`·`date` → `time.Time`, NULL 허용 컬럼은 포인터 (`db_schema.md` 10절).
 - 입력 검증 방식(직접 작성 또는 go-playground/validator 연결)은 #8에서 정한다.
 
 ### 4단계 적용 시 변경 사항

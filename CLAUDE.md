@@ -96,7 +96,8 @@ docker compose exec frontend npm run build
 
 # 테스트
 docker compose exec backend go vet ./...
-docker compose exec backend go test ./...
+docker compose exec backend go test ./...           # DB 테스트는 TEST_DATABASE_URL(${POSTGRES_DB}_test)에서 실행, 없으면 자동 생성
+docker compose exec -e TEST_DATABASE_URL= backend go test ./...   # DB 테스트 건너뛰기
 
 # 마이그레이션 (backend·collector는 시작 시 자동으로 up 실행)
 docker compose exec backend go run ./cmd/migrate          # 상태 확인 (status)
@@ -123,6 +124,8 @@ docker compose down -v                # 볼륨 삭제 (DB 초기화)
 - Git Bash에서 컨테이너 안의 절대 경로(`/app` 등)를 인자로 넘길 때는 `MSYS_NO_PATHCONV=1`을 앞에 붙인다.
 - 프론트엔드는 `/api/*`로 호출하고, Vite 프록시가 `/api`를 떼어 백엔드로 넘긴다(`/api/healthz` → `/healthz`).
 - 백엔드 기술: Echo v5, sqlc + pgx v5, goose(마이그레이션, `src/backend/migrations/`), gocron v2(수집 일정). 선정 근거는 `mydocs/tech/backend_stack.md`.
+- DB 스키마 설계와 근거는 `mydocs/tech/db_schema.md`. 금액은 `shopspring/decimal`, NULL 허용 컬럼은 포인터로 생성된다(`sqlc.yaml`). 쿼리를 바꾸면 `go tool sqlc generate` 후 생성 코드(`internal/db/dbq`)도 함께 커밋한다.
+- DB 테스트는 테스트 DB의 `public` 스키마를 매번 비운다. `TEST_DATABASE_URL`을 개발 DB로 지정하면 테스트가 실패하도록 막아 두었다.
 
 ---
 
