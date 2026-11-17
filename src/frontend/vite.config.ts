@@ -1,9 +1,16 @@
+import { fileURLToPath, URL } from 'node:url'
+
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
 
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [vue()],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   server: {
     // Windows 바인드 마운트는 파일 변경 이벤트가 컨테이너로 전달되지 않아 polling 으로 감시한다.
     watch: {

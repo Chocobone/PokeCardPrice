@@ -1,49 +1,51 @@
-<script setup>
-import { onMounted, ref } from 'vue'
-
-// 백엔드 연결 확인용 임시 화면. #12에서 라우터와 실제 화면으로 교체한다.
-const status = ref('확인 중...')
-const ok = ref(null)
-
-async function checkBackend() {
-  try {
-    const res = await fetch('/api/healthz')
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
-    const body = await res.json()
-    status.value = body.status
-    ok.value = body.status === 'ok'
-  } catch (err) {
-    status.value = `연결 실패 (${err.message})`
-    ok.value = false
-  }
-}
-
-onMounted(checkBackend)
+<script setup lang="ts">
+import AppFooter from '@/components/layout/AppFooter.vue'
+import AppHeader from '@/components/layout/AppHeader.vue'
 </script>
 
 <template>
-  <main>
-    <h1>Card-Market</h1>
-    <p>포켓몬 카드 시세 비교</p>
-    <p class="status">
-      백엔드 상태:
-      <strong :class="{ ok: ok === true, fail: ok === false }">{{ status }}</strong>
-    </p>
-  </main>
+  <div class="app">
+    <a
+      class="skip-link"
+      href="#main"
+    >본문으로 건너뛰기</a>
+    <AppHeader />
+    <main
+      id="main"
+      class="app-main container"
+    >
+      <RouterView />
+    </main>
+    <AppFooter />
+  </div>
 </template>
 
 <style scoped>
-main {
-  max-width: 40rem;
-  margin: 4rem auto;
-  padding: 0 1rem;
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  min-height: 100dvh;
 }
 
-.ok {
-  color: #1a7f37;
+.app-main {
+  flex: 1;
+  width: 100%;
+  padding-block: var(--space-6) var(--space-8);
 }
 
-.fail {
-  color: #cf222e;
+.skip-link {
+  position: absolute;
+  left: var(--space-4);
+  top: -100px;
+  z-index: 10;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+}
+
+.skip-link:focus {
+  top: var(--space-2);
 }
 </style>

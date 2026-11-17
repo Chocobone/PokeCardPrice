@@ -1,0 +1,70 @@
+/*
+ * 디자인 변수. 색·간격·글꼴은 여기서만 정하고 컴포넌트는 변수만 쓴다.
+ * 상승은 빨강, 하락은 파랑 (국내 시세 표기 관례).
+ */
+:root {
+  color-scheme: light;
+
+  --color-bg: #f6f7f9;
+  --color-surface: #ffffff;
+  --color-surface-muted: #eef0f3;
+  --color-border: #d9dde3;
+  --color-text: #1f2328;
+  --color-text-muted: #5b6470;
+  --color-accent: #3b5bdb;
+  --color-accent-contrast: #ffffff;
+  --color-up: #d6336c;
+  --color-down: #1c7ed6;
+  --color-danger: #c92a2a;
+  --color-focus: #4dabf7;
+
+  --font-family: system-ui, -apple-system, 'Segoe UI', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
+  --font-sm: 0.875rem;
+  --font-md: 1rem;
+  --font-lg: 1.125rem;
+  --font-xl: 1.5rem;
+  --font-2xl: 2rem;
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-8: 3rem;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --shadow-sm: 0 1px 2px rgb(16 24 40 / 6%), 0 1px 3px rgb(16 24 40 / 10%);
+
+  --container-max: 1200px;
+  --gutter: 16px;
+  --header-height: 56px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --color-bg: #0f1115;
+    --color-surface: #171a21;
+    --color-surface-muted: #1e222b;
+    --color-border: #2d333d;
+    --color-text: #e6e8eb;
+    --color-text-muted: #9aa3ae;
+    --color-accent: #748ffc;
+    --color-accent-contrast: #0f1115;
+    --color-up: #f06595;
+    --color-down: #4dabf7;
+    --color-danger: #ff6b6b;
+    --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
+  }
+}
+
+@media (min-width: 640px) {
+  :root {
+    --gutter: 24px;
+    --header-height: 64px;
+  }
+}

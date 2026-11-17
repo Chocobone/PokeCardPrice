@@ -126,6 +126,7 @@ docker compose down -v                # 볼륨 삭제 (DB 초기화)
 
 - Git Bash에서 컨테이너 안의 절대 경로(`/app` 등)를 인자로 넘길 때는 `MSYS_NO_PATHCONV=1`을 앞에 붙인다.
 - 프론트엔드는 `/api/*`로 호출하고, Vite 프록시가 `/api`를 떼어 백엔드로 넘긴다(`/api/healthz` → `/healthz`).
+- 프론트엔드 구조·규칙(TypeScript, 라우터·Pinia, API 목업 `VITE_API_MOCK`)은 `mydocs/tech/frontend_structure.md`, API 계약은 `mydocs/tech/api_contract.md`. 정적 검사는 `docker compose exec frontend npm run typecheck`·`npm run lint`.
 - 백엔드 기술: Echo v5, sqlc + pgx v5, goose(마이그레이션, `src/backend/migrations/`), gocron v2(수집 일정). 선정 근거는 `mydocs/tech/backend_stack.md`.
 - DB 스키마 설계와 근거는 `mydocs/tech/db_schema.md`. 금액은 `shopspring/decimal`, NULL 허용 컬럼은 포인터로 생성된다(`sqlc.yaml`). 쿼리를 바꾸면 `go tool sqlc generate` 후 생성 코드(`internal/db/dbq`)도 함께 커밋한다.
 - 카탈로그 수집기(`internal/tcgdex`, `internal/catalog`)의 호출 규칙·한글판 연결 규칙·변형 매핑은 `mydocs/tech/catalog_collector.md`. 포켓몬 종 이름은 `internal/species`에 내장(PokeAPI, 라이선스 `LICENSE.pokeapi.md`).
