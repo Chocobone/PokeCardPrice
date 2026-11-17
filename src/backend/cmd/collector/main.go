@@ -1,8 +1,10 @@
 // Card-Market 시세 수집기 진입점.
 //
 // 기본은 일정(매일 05:30 KST)에 따라 수집 작업을 실행하며 계속 떠 있는다.
+// 매일 작업은 카드 카탈로그(#5)를 갱신하고, 매월 1일에는 카드 상세까지 전체 갱신한다.
 // -once 를 주면 모든 작업을 한 번씩 바로 실행하고 끝난다(개발·수동 수집용).
 // COLLECTOR_INTERVAL(예: 30s)을 설정하면 일정 대신 그 간격으로 실행한다(개발용).
+// 카탈로그 범위 환경 변수(CATALOG_*)는 catalog.go 참고.
 package main
 
 import (
@@ -62,14 +64,22 @@ func run(once bool) error {
 		slog.Warn("using COLLECTOR_INTERVAL instead of daily schedule", "interval", d)
 	}
 
+	catCfg, err := catalogConfigFromEnv()
+	if err != nil {
+		return err
+	}
+	// 매월 1일 전체 갱신은 매일 일정 실행에서만 한다 (-once·COLLECTOR_INTERVAL 은 CATALOG_FULL 로 정한다).
+	scheduled := !once && os.Getenv("COLLECTOR_INTERVAL") == ""
+
 	jobs := []scheduler.Job{
 		{
-			Name: "collect-prices",
+			Name: "collect-daily",
 			When: daily,
-			// 실제 수집은 #5(카탈로그), #6(해외 시세), #7(국내 거래가)에서 구현한다.
+			// 시세는 카드가 있어야 저장할 수 있어, 한 작업 안에서 카탈로그 → 시세 순으로 실행한다.
+			// 해외 시세(#6), 국내 거래가(#7)는 카탈로그 뒤에 이어 붙인다.
 			Run: func(ctx context.Context) error {
-				slog.Info("no collection tasks yet")
-				return nil
+				full := scheduled && isFullRefreshDay(time.Now().In(loc))
+				return collectCatalog(ctx, pool, catCfg, full)
 			},
 		},
 	}

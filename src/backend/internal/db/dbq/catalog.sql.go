@@ -10,6 +10,33 @@ import (
 	"time"
 )
 
+const deleteStaleAutoCardLinks = `-- name: DeleteStaleAutoCardLinks :execrows
+DELETE FROM card_links l
+USING cards ko
+WHERE l.card_id = ko.id
+  AND l.method = 'auto'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM cards ja
+    JOIN sets js ON js.id = ja.set_id
+    JOIN sets ks ON ks.id = ko.set_id
+    WHERE ja.id = l.linked_card_id
+      AND ko.language = 'ko'
+      AND ja.language = 'ja'
+      AND js.tcgdex_id = ks.tcgdex_id
+      AND ja.local_id = ko.local_id
+      AND ko.dex_ids IS NOT DISTINCT FROM ja.dex_ids)
+`
+
+// 규칙에 더는 맞지 않는 auto 연결을 지운다 (일본판 카드의 도감 번호가 바뀐 경우 등). manual 연결은 두지 않는다.
+func (q *Queries) DeleteStaleAutoCardLinks(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteStaleAutoCardLinks)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const getCard = `-- name: GetCard :one
 SELECT id, set_id, language, tcgdex_id, local_id, name, rarity, image_url, dex_ids, has_ko_edition, created_at, updated_at FROM cards WHERE id = $1
 `
@@ -32,6 +59,67 @@ func (q *Queries) GetCard(ctx context.Context, id int64) (Card, error) {
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const getKoLinkStats = `-- name: GetKoLinkStats :one
+SELECT
+  (SELECT count(*) FROM cards WHERE language = 'ko')::int AS ko_cards,
+  (SELECT count(*) FROM card_links l JOIN cards c ON c.id = l.card_id WHERE c.language = 'ko' AND l.method = 'auto')::int AS auto_links,
+  (SELECT count(*) FROM card_links l JOIN cards c ON c.id = l.card_id WHERE c.language = 'ko' AND l.method = 'manual')::int AS manual_links,
+  (SELECT count(*) FROM cards WHERE has_ko_edition)::int AS has_ko_edition
+`
+
+type GetKoLinkStatsRow struct {
+	KoCards      int32
+	AutoLinks    int32
+	ManualLinks  int32
+	HasKoEdition int32
+}
+
+// 한글판 연결 현황 집계 (수집 결과 로그용).
+func (q *Queries) GetKoLinkStats(ctx context.Context) (GetKoLinkStatsRow, error) {
+	row := q.db.QueryRow(ctx, getKoLinkStats)
+	var i GetKoLinkStatsRow
+	err := row.Scan(
+		&i.KoCards,
+		&i.AutoLinks,
+		&i.ManualLinks,
+		&i.HasKoEdition,
+	)
+	return i, err
+}
+
+const listCardTcgdexIDsBySet = `-- name: ListCardTcgdexIDsBySet :many
+SELECT c.tcgdex_id
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+WHERE s.language = $1 AND s.tcgdex_id = $2
+`
+
+type ListCardTcgdexIDsBySetParams struct {
+	Language    string
+	SetTcgdexID string
+}
+
+// 카탈로그 수집기(#5): 이미 적재한 카드를 골라내 신규 카드만 상세 조회한다 (Q1).
+func (q *Queries) ListCardTcgdexIDsBySet(ctx context.Context, arg ListCardTcgdexIDsBySetParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listCardTcgdexIDsBySet, arg.Language, arg.SetTcgdexID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var tcgdex_id string
+		if err := rows.Scan(&tcgdex_id); err != nil {
+			return nil, err
+		}
+		items = append(items, tcgdex_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listCardVariants = `-- name: ListCardVariants :many
@@ -61,6 +149,166 @@ func (q *Queries) ListCardVariants(ctx context.Context, cardID int64) ([]CardVar
 		return nil, err
 	}
 	return items, nil
+}
+
+const listCardsByKoSpeciesName = `-- name: ListCardsByKoSpeciesName :many
+SELECT c.id, c.set_id, c.language, c.tcgdex_id, c.local_id, c.name, c.rarity, c.image_url, c.dex_ids, c.has_ko_edition, c.created_at, c.updated_at
+FROM pokemon_species p
+JOIN cards c ON c.dex_ids @> ARRAY[p.dex_id]
+WHERE p.name_ko = $1
+ORDER BY c.language, c.tcgdex_id
+`
+
+// 한글 종 이름으로 카드를 찾는다 (#8 검색의 출발점, 3단계 검증용).
+func (q *Queries) ListCardsByKoSpeciesName(ctx context.Context, nameKo *string) ([]Card, error) {
+	rows, err := q.db.Query(ctx, listCardsByKoSpeciesName, nameKo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Card
+	for rows.Next() {
+		var i Card
+		if err := rows.Scan(
+			&i.ID,
+			&i.SetID,
+			&i.Language,
+			&i.TcgdexID,
+			&i.LocalID,
+			&i.Name,
+			&i.Rarity,
+			&i.ImageUrl,
+			&i.DexIds,
+			&i.HasKoEdition,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnlinkedKoCards = `-- name: ListUnlinkedKoCards :many
+SELECT c.tcgdex_id
+FROM cards c
+WHERE c.language = 'ko'
+  AND NOT EXISTS (SELECT 1 FROM card_links l WHERE l.card_id = c.id)
+ORDER BY c.tcgdex_id
+`
+
+// 연결이 없는 ko 카드 (#7 수동 연결 대상).
+func (q *Queries) ListUnlinkedKoCards(ctx context.Context) ([]string, error) {
+	rows, err := q.db.Query(ctx, listUnlinkedKoCards)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var tcgdex_id string
+		if err := rows.Scan(&tcgdex_id); err != nil {
+			return nil, err
+		}
+		items = append(items, tcgdex_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const setHasKoEdition = `-- name: SetHasKoEdition :execrows
+UPDATE cards c
+SET has_ko_edition = x.flag,
+    updated_at = now()
+FROM (
+  SELECT ja.id,
+         COALESCE(CASE WHEN ja.local_id ~ '^[0-9]{1,6}$' THEN ja.local_id::int END <= ks.card_count, false) AS flag
+  FROM cards ja
+  JOIN sets js ON js.id = ja.set_id
+  LEFT JOIN sets ks ON ks.language = 'ko' AND ks.tcgdex_id = js.tcgdex_id
+  WHERE ja.language = 'ja'
+) x
+WHERE c.id = x.id
+  AND c.has_ko_edition IS DISTINCT FROM x.flag
+`
+
+// has_ko_edition 표시 (#5, Q4): 같은 ID 의 ko 세트가 있는 ja 세트에서, 번호(숫자) ≤ ko 세트 카드 수인 카드만 참.
+// 그 밖의 ja 카드는 거짓으로 되돌린다. 값이 바뀌는 행만 갱신한다.
+func (q *Queries) SetHasKoEdition(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, setHasKoEdition)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const updateCardBrief = `-- name: UpdateCardBrief :execrows
+UPDATE cards
+SET local_id = $1,
+    name = $2,
+    image_url = $3,
+    updated_at = now()
+WHERE language = $4
+  AND tcgdex_id = $5
+  AND (local_id IS DISTINCT FROM $1
+       OR name IS DISTINCT FROM $2
+       OR image_url IS DISTINCT FROM $3)
+`
+
+type UpdateCardBriefParams struct {
+	LocalID  string
+	Name     string
+	ImageUrl *string
+	Language string
+	TcgdexID string
+}
+
+// 세트 상세의 카드 요약(번호·이름·이미지)만 갱신한다. 희귀도·도감 번호는 카드 상세에만 있어 건드리지 않는다.
+// 값이 같으면 갱신하지 않아 updated_at 이 실제 변경 시각을 나타낸다.
+func (q *Queries) UpdateCardBrief(ctx context.Context, arg UpdateCardBriefParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateCardBrief,
+		arg.LocalID,
+		arg.Name,
+		arg.ImageUrl,
+		arg.Language,
+		arg.TcgdexID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const upsertAutoCardLinks = `-- name: UpsertAutoCardLinks :execrows
+INSERT INTO card_links (card_id, linked_card_id, method)
+SELECT ko.id, ja.id, 'auto'
+FROM cards ko
+JOIN sets ks ON ks.id = ko.set_id
+JOIN sets js ON js.language = 'ja' AND js.tcgdex_id = ks.tcgdex_id
+JOIN cards ja ON ja.set_id = js.id AND ja.local_id = ko.local_id
+WHERE ko.language = 'ko'
+  AND ko.dex_ids IS NOT DISTINCT FROM ja.dex_ids
+ON CONFLICT (card_id) DO UPDATE
+SET linked_card_id = EXCLUDED.linked_card_id,
+    updated_at = now()
+WHERE card_links.method = 'auto'
+  AND card_links.linked_card_id <> EXCLUDED.linked_card_id
+`
+
+// 한글판 자동 연결 (#5, Q2): ko 카드와 세트 ID·localId 가 같고 dexId 가 같은(둘 다 없으면 같음) ja 카드를 잇는다.
+// 연결 방향은 항상 ko → ja 이다. manual 연결은 덮어쓰지 않는다. 바뀐 행이 없으면 0 이다.
+func (q *Queries) UpsertAutoCardLinks(ctx context.Context) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertAutoCardLinks)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertCard = `-- name: UpsertCard :one
@@ -123,6 +371,40 @@ func (q *Queries) UpsertCardVariant(ctx context.Context, arg UpsertCardVariantPa
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const upsertPokemonSpecies = `-- name: UpsertPokemonSpecies :execrows
+INSERT INTO pokemon_species (dex_id, name_en, name_ja, name_ko)
+SELECT unnest($1::int[]), unnest($2::text[]), NULLIF(unnest($3::text[]), ''), NULLIF(unnest($4::text[]), '')
+ON CONFLICT (dex_id) DO UPDATE
+SET name_en = EXCLUDED.name_en,
+    name_ja = EXCLUDED.name_ja,
+    name_ko = EXCLUDED.name_ko,
+    updated_at = now()
+WHERE (pokemon_species.name_en, pokemon_species.name_ja, pokemon_species.name_ko)
+      IS DISTINCT FROM (EXCLUDED.name_en, EXCLUDED.name_ja, EXCLUDED.name_ko)
+`
+
+type UpsertPokemonSpeciesParams struct {
+	DexIds  []int32
+	NamesEn []string
+	NamesJa []string
+	NamesKo []string
+}
+
+// 종 이름 전체를 한 번에 upsert 한다 (#5, Q5). 값이 같은 행은 갱신하지 않는다.
+// 빈 이름은 NULL 로 넣는다. 배열 길이는 호출 측에서 같게 맞춘다.
+func (q *Queries) UpsertPokemonSpecies(ctx context.Context, arg UpsertPokemonSpeciesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertPokemonSpecies,
+		arg.DexIds,
+		arg.NamesEn,
+		arg.NamesJa,
+		arg.NamesKo,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertSet = `-- name: UpsertSet :one
