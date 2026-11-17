@@ -125,7 +125,7 @@ interface MoversResponse {
 |------|------|
 | 영어판 `sv03.5`(151) | 이상해씨·파이리·리자몽·꼬부기·피카츄·푸린·팬텀·이브이·잠만보·뮤츠·뮤 카드와 트레이너스 1장 |
 | 영어판 `base1` | 리자몽·파이리·피카츄·뮤츠 |
-| 일본판 | 리자몽·피카츄·팬텀·이브이·뮤츠·뮤 종별 최신 2장 |
+| 일본판 | 리자몽·피카츄·팬텀·이브이·뮤츠·뮤 종별 이미지가 있는 최신 2장, 한글판 표본(각 세트 1~4번)과 연결된 일본판 카드 |
 | 한글판 | 세트별 앞 4장 |
 
 카드 ID(`cards.id`)는 개발 DB를 다시 적재하면 바뀌므로 목업 안에서만 의미가 있다.
@@ -145,13 +145,16 @@ WITH pick AS (
   SELECT id FROM (
     SELECT c.id, row_number() OVER (PARTITION BY c.dex_ids[1] ORDER BY s.release_date DESC NULLS LAST, c.local_id) rn
     FROM cards c JOIN sets s ON s.id = c.set_id
-    WHERE c.language = 'ja' AND c.dex_ids[1] IN (6,25,94,133,150,151)
+    WHERE c.language = 'ja' AND c.image_url IS NOT NULL AND c.dex_ids[1] IN (6,25,94,133,150,151)
   ) j WHERE rn <= 2
   UNION
   SELECT id FROM (
     SELECT c.id, row_number() OVER (PARTITION BY s.tcgdex_id ORDER BY c.local_id) rn
     FROM cards c JOIN sets s ON s.id = c.set_id WHERE c.language = 'ko'
   ) k WHERE rn <= 4
+  UNION
+  SELECT l.linked_card_id FROM card_links l JOIN cards c ON c.id = l.card_id
+  WHERE c.local_id IN ('001', '002', '003', '004')
 )
 SELECT coalesce(json_agg(json_build_object(
   'id', c.id, 'language', c.language, 'tcgdexId', c.tcgdex_id, 'name', c.name, 'localId', c.local_id,
