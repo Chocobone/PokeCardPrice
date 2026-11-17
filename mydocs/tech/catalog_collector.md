@@ -224,6 +224,23 @@ TCGdex `variants`는 `normal`, `reverse`, `holo`, `firstEdition`, `wPromo` 다�
 
 표본 적재(개발 DB): `en` `base2` 64장·변형 130, `exu` 28장·28, `sv03.5` 207장·362, `ja` `SV4K` 95장·95. 세트별 카드 수가 `cardCount.total`과 같고, 재실행 시 행이 늘지 않았다 (2.5초). `ja` `SV4K`의 67번 이후 29장은 TCGdex에 희귀도가 없다.
 
+### 3단계: 한글판 연결과 종 이름 적재 (2026-11-17)
+
+| 항목 | 구현 |
+|------|------|
+| 실행 시점 | 종 이름: 작업 시작 시. 연결·`has_ko_edition`: 언어별 적재 후 DB 전체 기준, 한 트랜잭션 |
+| 자동 연결 | `UpsertAutoCardLinks` (Q2 규칙, `ko` → `ja`, `manual` 보호) |
+| 오래된 연결 | `DeleteStaleAutoCardLinks`: 규칙에 맞지 않게 된 `auto` 연결 삭제 (`manual` 제외) |
+| 미연결 | `ListUnlinkedKoCards`로 건수와 앞 20장 ID를 `WARN` 로그 |
+| `has_ko_edition` | `SetHasKoEdition` (Q4 규칙). 규칙 밖 `ja` 카드는 거짓으로 되돌림. 숫자가 아닌 번호는 거짓 |
+| 종 이름 | `internal/species/pokemon_species_names.csv` (PokeAPI 커밋 `8d8a49d`, 1,025행, 영어·일본어 가나·한국어) + `LICENSE.pokeapi.md`, `embed` 후 `UpsertPokemonSpecies` |
+
+실데이터: `ko` 세트 91개 저장(4개 404), 카드 239장 모두 `auto` 연결(1단계 측정과 일치). `has_ko_edition`은 `SV4K` 95, `SV4M` 95, `SV5K` 71(`ko` 세트 카드 수 71, 수록 카드 49). `ko` 전체 적재 1분 25초.
+
+#### 종 이름 데이터 갱신
+
+새 세대로 종이 추가되면 PokeAPI `data/v2/csv/pokemon_species_names.csv`에서 `local_language_id` 9(`en`)·1(`ja-Hrkt`)·3(`ko`)의 `name`을 도감 번호별로 모아 `dex_id,name_en,name_ja,name_ko` 형식으로 다시 만들고, `LICENSE.pokeapi.md`의 커밋·날짜를 고친다. 다음 카탈로그 작업에서 반영된다.
+
 ## 참고 자료
 
 - TCGdex FAQ: https://tcgdex.dev/faq

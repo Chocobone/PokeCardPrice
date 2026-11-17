@@ -1,10 +1,12 @@
 // Package catalog 는 TCGdex 의 세트·카드·카드 변형을 카탈로그 테이블에 적재한다 (#5).
 //
-// 흐름 (언어마다):
-//  1. 세트 목록을 받는다.
+// 흐름:
+//  0. 내장 포켓몬 종 이름(internal/species)을 pokemon_species 에 upsert 한다.
+//  1. 언어마다 세트 목록을 받는다.
 //  2. 세트마다 세트 상세(카드 요약 포함)를 받는다.
 //  3. DB 에 없는 카드만 카드 상세를 받는다 (Full 이면 모든 카드). 희귀도·도감 번호·변형은 카드 상세에만 있다.
 //  4. 세트 하나를 트랜잭션 하나로 저장한다. 세트가 실패하면 그 세트만 롤백하고 다음 세트로 넘어간다.
+//  5. 적재가 끝나면 DB 전체를 기준으로 ko → ja 자동 연결과 has_ko_edition 표시를 다시 맞춘다.
 //
 // 외부 호출은 트랜잭션 밖에서 끝내, 느린 응답 때문에 트랜잭션이 오래 열려 있지 않게 한다.
 // 소스에서 사라진 세트·카드는 지우지 않는다 (가격·컬렉션이 참조할 수 있다).
@@ -24,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db/dbq"
+	"github.com/Chocobone/PokeCardPrice/src/backend/internal/species"
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/tcgdex"
 )
 
@@ -55,7 +58,22 @@ type Result struct {
 	CardsSkipped  int      // 신규인데 카드 상세가 404 라 넣지 못한 카드
 	Variants      int      // upsert 한 변형 (기존 포함)
 	FailedSets    []string // 실패한 세트 ("{lang}/{id}"). 다음 실행에서 다시 시도된다
-	Duration      time.Duration
+
+	SpeciesChanged int // 새로 넣거나 이름이 바뀐 종
+	Links          LinkResult
+	Duration       time.Duration
+}
+
+// LinkResult 는 한글판 연결 작업 결과이다. 건수는 작업 후 DB 전체 기준이다.
+type LinkResult struct {
+	Changed      int // 이번 실행에서 새로 만들거나 대상을 바꾼 auto 연결
+	Removed      int // 규칙에 맞지 않아 지운 auto 연결
+	KoCards      int // ko 카드 수
+	Auto         int // auto 연결 수
+	Manual       int // manual 연결 수
+	Unlinked     int // 연결이 없는 ko 카드 수 (#7 수동 연결 대상)
+	HasKoEdition int // has_ko_edition 이 참인 ja 카드 수
+	HasKoChanged int // 이번 실행에서 has_ko_edition 이 바뀐 카드
 }
 
 func (r *Result) add(o Result) {
@@ -75,6 +93,11 @@ func (r Result) LogValue() slog.Value {
 		slog.Int("cards_new", r.CardsNew), slog.Int("cards_detailed", r.CardsDetailed),
 		slog.Int("cards_brief", r.CardsBrief), slog.Int("cards_skipped", r.CardsSkipped),
 		slog.Int("variants", r.Variants), slog.Any("failed_sets", r.FailedSets),
+		slog.Int("species_changed", r.SpeciesChanged),
+		slog.Int("links_changed", r.Links.Changed), slog.Int("links_removed", r.Links.Removed),
+		slog.Int("ko_cards", r.Links.KoCards), slog.Int("links_auto", r.Links.Auto),
+		slog.Int("links_manual", r.Links.Manual), slog.Int("ko_unlinked", r.Links.Unlinked),
+		slog.Int("has_ko_edition", r.Links.HasKoEdition), slog.Int("has_ko_changed", r.Links.HasKoChanged),
 		slog.Duration("duration", r.Duration),
 	)
 }
@@ -100,6 +123,12 @@ func (c *Collector) Run(ctx context.Context, opt Options) (Result, error) {
 		langs = Languages
 	}
 	var res Result
+	n, err := c.syncSpecies(ctx)
+	if err != nil {
+		return res, fmt.Errorf("종 이름 적재: %w", err)
+	}
+	res.SpeciesChanged = n
+
 	var listErrs []error
 	attempted := 0
 	for _, lang := range langs {
@@ -130,14 +159,84 @@ func (c *Collector) Run(ctx context.Context, opt Options) (Result, error) {
 			res.add(r)
 		}
 	}
-	res.Duration = time.Since(start)
 	if len(listErrs) == len(langs) {
+		res.Duration = time.Since(start)
 		return res, errors.Join(listErrs...)
 	}
 	if attempted > 0 && len(res.FailedSets) == attempted {
+		res.Duration = time.Since(start)
 		return res, fmt.Errorf("모든 세트(%d개) 적재 실패", attempted)
 	}
+
+	// 연결은 적재 순서와 무관하게 DB 전체를 기준으로 매번 다시 맞춘다.
+	res.Links, err = c.linkKoEditions(ctx)
+	res.Duration = time.Since(start)
+	if err != nil {
+		return res, fmt.Errorf("한글판 연결: %w", err)
+	}
 	return res, nil
+}
+
+// syncSpecies 는 내장 종 이름 데이터를 pokemon_species 에 upsert 하고, 바뀐 행 수를 돌려준다 (Q5).
+func (c *Collector) syncSpecies(ctx context.Context) (int, error) {
+	all, err := species.All()
+	if err != nil {
+		return 0, err
+	}
+	p := dbq.UpsertPokemonSpeciesParams{
+		DexIds:  make([]int32, len(all)),
+		NamesEn: make([]string, len(all)),
+		NamesJa: make([]string, len(all)),
+		NamesKo: make([]string, len(all)),
+	}
+	for i, s := range all {
+		p.DexIds[i], p.NamesEn[i], p.NamesJa[i], p.NamesKo[i] = s.DexID, s.NameEn, s.NameJa, s.NameKo
+	}
+	n, err := dbq.New(c.pool).UpsertPokemonSpecies(ctx, p)
+	return int(n), err
+}
+
+// linkKoEditions 는 ko 카드를 같은 번호의 ja 카드에 auto 연결하고(Q2), ja 카드의 has_ko_edition 을 맞춘다(Q4).
+// 한 트랜잭션으로 실행해, 중간에 실패하면 이전 상태를 유지한다.
+func (c *Collector) linkKoEditions(ctx context.Context) (LinkResult, error) {
+	var lr LinkResult
+	var unlinked []string
+	err := pgx.BeginFunc(ctx, c.pool, func(tx pgx.Tx) error {
+		q := dbq.New(tx)
+		removed, err := q.DeleteStaleAutoCardLinks(ctx)
+		if err != nil {
+			return fmt.Errorf("오래된 연결 삭제: %w", err)
+		}
+		changed, err := q.UpsertAutoCardLinks(ctx)
+		if err != nil {
+			return fmt.Errorf("자동 연결: %w", err)
+		}
+		hasKo, err := q.SetHasKoEdition(ctx)
+		if err != nil {
+			return fmt.Errorf("has_ko_edition: %w", err)
+		}
+		st, err := q.GetKoLinkStats(ctx)
+		if err != nil {
+			return err
+		}
+		if unlinked, err = q.ListUnlinkedKoCards(ctx); err != nil {
+			return err
+		}
+		lr = LinkResult{
+			Changed: int(changed), Removed: int(removed),
+			KoCards: int(st.KoCards), Auto: int(st.AutoLinks), Manual: int(st.ManualLinks),
+			Unlinked: len(unlinked), HasKoEdition: int(st.HasKoEdition), HasKoChanged: int(hasKo),
+		}
+		return nil
+	})
+	if err != nil {
+		return LinkResult{}, err
+	}
+	if len(unlinked) > 0 {
+		// 규칙에 맞는 일본판 카드가 없는 한글판 카드. #7 에서 수동으로 연결한다.
+		slog.Warn("catalog: ko cards without ja link", "count", len(unlinked), "cards", unlinked[:min(len(unlinked), 20)])
+	}
+	return lr, nil
 }
 
 // collectSet 은 세트 하나를 받아 저장한다.

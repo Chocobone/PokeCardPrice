@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db"
+	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db/dbq"
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db/dbtest"
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/tcgdex"
 )
@@ -351,5 +353,163 @@ func TestCanceledContextStops(t *testing.T) {
 	}
 	if n := e.count(t, "SELECT count(*) FROM sets"); n != 0 {
 		t.Fatal("nothing should be stored")
+	}
+}
+
+// 한글판 연결용 데이터: ja SV5K 5장(004 는 트레이너스, 005 는 시크릿), ko SV5K 3장(카드 수 4), ko 세트가 없는 ja SV6K.
+func (e *env) seedKo() {
+	nv := tcgdex.Variants{Normal: true}
+	e.api.addSet("ja", "SV5K", "ワイルドフォース",
+		card("SV5K-001", "001", "フシギダネ", "C", []int32{1}, nv),
+		card("SV5K-002", "002", "フシギソウ", "C", []int32{2}, nv),
+		card("SV5K-003", "003", "フシギバナ", "R", []int32{3}, nv),
+		card("SV5K-004", "004", "ネモ", "U", nil, nv),
+		card("SV5K-005", "005", "フシギダネ", "AR", []int32{1}, nv),
+	)
+	e.api.addSet("ja", "SV6K", "変幻の仮面",
+		card("SV6K-001", "001", "ピカチュウ", "C", []int32{25}, nv),
+	)
+	e.api.addSet("ko", "SV5K", "와일드포스",
+		card("SV5K-001", "001", "이상해씨", "C", []int32{1}, nv),
+		card("SV5K-002", "002", "이상해풀", "C", []int32{99}, nv), // 도감 번호가 달라 연결하지 않는다
+		card("SV5K-004", "004", "네모", "U", nil, nv),           // 둘 다 도감 번호가 없으면 같다고 본다
+	)
+	e.api.setDetail["ko/SV5K"].CardCount.Total = 4
+}
+
+func (e *env) linkedTo(t *testing.T, koTcgdexID string) (string, string) {
+	t.Helper()
+	var ja, method string
+	err := e.pool.QueryRow(e.ctx, `SELECT j.tcgdex_id, l.method FROM card_links l
+		JOIN cards k ON k.id = l.card_id JOIN cards j ON j.id = l.linked_card_id
+		WHERE k.language = 'ko' AND k.tcgdex_id = $1`, koTcgdexID).Scan(&ja, &method)
+	if err != nil {
+		return "", ""
+	}
+	return ja, method
+}
+
+func (e *env) hasKo(t *testing.T) []string {
+	t.Helper()
+	rows, err := e.pool.Query(e.ctx, `SELECT tcgdex_id FROM cards WHERE has_ko_edition ORDER BY tcgdex_id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+func TestKoLinksAndHasKoEdition(t *testing.T) {
+	e := setup(t)
+	e.seedKo()
+
+	res := e.run(t, Options{})
+	want := LinkResult{Changed: 2, KoCards: 3, Auto: 2, Unlinked: 1, HasKoEdition: 4, HasKoChanged: 4}
+	if res.Links != want {
+		t.Fatalf("첫 실행 Links = %+v, want %+v", res.Links, want)
+	}
+	if ja, m := e.linkedTo(t, "SV5K-001"); ja != "SV5K-001" || m != "auto" {
+		t.Errorf("SV5K-001 → %q (%s)", ja, m)
+	}
+	if ja, _ := e.linkedTo(t, "SV5K-002"); ja != "" {
+		t.Errorf("도감 번호가 다른 SV5K-002 가 %q 에 연결됨", ja)
+	}
+	if ja, m := e.linkedTo(t, "SV5K-004"); ja != "SV5K-004" || m != "auto" {
+		t.Errorf("SV5K-004 → %q (%s)", ja, m)
+	}
+	// ja SV5K 001~004 만 참 (005 는 ko 카드 수 4 초과, SV6K 는 ko 세트 없음).
+	if got := e.hasKo(t); !slices.Equal(got, []string{"SV5K-001", "SV5K-002", "SV5K-003", "SV5K-004"}) {
+		t.Errorf("has_ko_edition = %v", got)
+	}
+
+	// 재실행: 바뀌는 것이 없다.
+	res = e.run(t, Options{})
+	want.Changed, want.HasKoChanged = 0, 0
+	if res.Links != want {
+		t.Fatalf("재실행 Links = %+v, want %+v", res.Links, want)
+	}
+
+	// ko 세트 카드 수가 줄면 범위를 벗어난 카드는 거짓으로 되돌린다.
+	e.api.setDetail["ko/SV5K"].CardCount.Total = 2
+	res = e.run(t, Options{})
+	if res.Links.HasKoChanged != 2 || res.Links.HasKoEdition != 2 {
+		t.Errorf("카드 수 2 로 변경 후 Links = %+v", res.Links)
+	}
+	if got := e.hasKo(t); !slices.Equal(got, []string{"SV5K-001", "SV5K-002"}) {
+		t.Errorf("has_ko_edition = %v", got)
+	}
+}
+
+func TestManualLinkIsKept(t *testing.T) {
+	e := setup(t)
+	e.seedKo()
+	e.run(t, Options{})
+
+	// 작업지시자가 SV5K-001(ko) 을 시크릿 SV5K-005(ja) 로, SV5K-002(ko) 를 SV5K-003(ja) 으로 수동 연결했다.
+	_, err := e.pool.Exec(e.ctx, `
+		INSERT INTO card_links (card_id, linked_card_id, method)
+		SELECT k.id, j.id, 'manual' FROM cards k, cards j
+		WHERE k.language = 'ko' AND j.language = 'ja'
+		  AND ((k.tcgdex_id = 'SV5K-001' AND j.tcgdex_id = 'SV5K-005') OR (k.tcgdex_id = 'SV5K-002' AND j.tcgdex_id = 'SV5K-003'))
+		ON CONFLICT (card_id) DO UPDATE SET linked_card_id = EXCLUDED.linked_card_id, method = 'manual'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res := e.run(t, Options{})
+	if res.Links.Changed != 0 || res.Links.Removed != 0 || res.Links.Manual != 2 || res.Links.Auto != 1 || res.Links.Unlinked != 0 {
+		t.Errorf("Links = %+v", res.Links)
+	}
+	for ko, wantJa := range map[string]string{"SV5K-001": "SV5K-005", "SV5K-002": "SV5K-003"} {
+		if ja, m := e.linkedTo(t, ko); ja != wantJa || m != "manual" {
+			t.Errorf("%s → %q (%s), want %s (manual)", ko, ja, m, wantJa)
+		}
+	}
+}
+
+func TestStaleAutoLinkIsRemoved(t *testing.T) {
+	e := setup(t)
+	e.seedKo()
+	e.run(t, Options{})
+
+	// 일본판 카드의 도감 번호가 바뀌면(데이터 수정) 규칙에 맞지 않아 연결을 지운다.
+	e.api.cards["ja/SV5K-001"].DexID = []int32{4}
+	res := e.run(t, Options{Languages: []string{"ja"}, Full: true})
+	if res.Links.Removed != 1 || res.Links.Auto != 1 || res.Links.Unlinked != 2 {
+		t.Errorf("Links = %+v", res.Links)
+	}
+	if ja, _ := e.linkedTo(t, "SV5K-001"); ja != "" {
+		t.Errorf("SV5K-001 이 아직 %q 에 연결됨", ja)
+	}
+}
+
+func TestSpeciesLoadedAndSearchable(t *testing.T) {
+	e := setup(t)
+	e.seedKo()
+	res := e.run(t, Options{})
+	if res.SpeciesChanged != 1025 {
+		t.Errorf("첫 실행 SpeciesChanged = %d, want 1025", res.SpeciesChanged)
+	}
+	if n := e.count(t, `SELECT count(*) FROM pokemon_species`); n != 1025 {
+		t.Errorf("pokemon_species = %d", n)
+	}
+	if res := e.run(t, Options{}); res.SpeciesChanged != 0 {
+		t.Errorf("재실행 SpeciesChanged = %d, want 0", res.SpeciesChanged)
+	}
+
+	// 한글 종 이름으로 일본판·한글판 카드를 찾는다.
+	cards, err := dbq.New(e.pool).ListCardsByKoSpeciesName(e.ctx, ptr("이상해씨"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range cards {
+		got = append(got, c.Language+"/"+c.TcgdexID)
+	}
+	if want := []string{"ja/SV5K-001", "ja/SV5K-005", "ko/SV5K-001"}; !slices.Equal(got, want) {
+		t.Errorf("이상해씨 카드 = %v, want %v", got, want)
 	}
 }
