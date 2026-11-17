@@ -106,7 +106,7 @@ docker compose exec backend go run ./cmd/migrate up       # 적용
 
 # 수집기 (매일 05:30 KST collect-daily: 카탈로그 갱신, 매월 1일은 카드 상세까지 전체 갱신)
 docker compose logs -f collector                          # 로그
-docker compose exec backend go run ./cmd/collector -once  # 수집 작업 즉시 1회 실행 (빈 DB 첫 적재는 약 3시간, 이후 갱신은 약 15분)
+docker compose exec backend go run ./cmd/collector -once  # 수집 작업 즉시 1회 실행 (빈 DB 첫 적재는 약 3시간, 새 카드가 없는 갱신은 약 2분)
 COLLECTOR_INTERVAL=30s docker compose up -d collector     # 짧은 간격으로 반복 실행 (개발용)
 # 카탈로그 범위 (개발용, 비우면 전체): CATALOG_LANGUAGES=en,ja / CATALOG_SETS=sv03.5,SV5K / CATALOG_FULL=true(매번 전체 갱신)
 docker compose exec -e CATALOG_LANGUAGES=en -e CATALOG_SETS=sv03.5 backend go run ./cmd/collector -once
