@@ -50,14 +50,17 @@ type Options struct {
 
 // Result 는 수집 결과 집계이다.
 type Result struct {
-	Sets          int      // 저장한 세트
-	SetsSkipped   int      // 세트 상세가 404 라 건너뛴 세트
-	CardsNew      int      // 새로 넣은 카드
-	CardsDetailed int      // 카드 상세로 갱신한 기존 카드 (Full)
-	CardsBrief    int      // 요약 필드(번호·이름·이미지)가 바뀐 기존 카드
-	CardsSkipped  int      // 신규인데 카드 상세가 404 라 넣지 못한 카드
-	Variants      int      // upsert 한 변형 (기존 포함)
-	FailedSets    []string // 실패한 세트 ("{lang}/{id}"). 다음 실행에서 다시 시도된다
+	Sets          int // 저장한 세트
+	SetsSkipped   int // 세트 상세가 404 라 건너뛴 세트
+	CardsNew      int // 새로 넣은 카드
+	CardsDetailed int // 카드 상세로 갱신한 기존 카드 (Full)
+	CardsBrief    int // 요약 필드(번호·이름·이미지)가 바뀐 기존 카드
+	CardsSkipped  int // 신규인데 카드 상세가 404 라 넣지 못한 카드
+	Variants      int // upsert 한 변형 (기존 포함)
+	SetsRecovered int // 1차에 실패했다가 실행 끝의 재시도로 적재한 세트
+	// FailedSets 는 재시도 후에도 실패한 세트("{lang}/{id}")와 세트 목록을 받지 못한 언어("{lang}/*")이다.
+	// 다음 실행에서 다시 시도된다.
+	FailedSets []string
 
 	SpeciesChanged int // 새로 넣거나 이름이 바뀐 종
 	Links          LinkResult
@@ -92,7 +95,8 @@ func (r Result) LogValue() slog.Value {
 		slog.Int("sets", r.Sets), slog.Int("sets_skipped", r.SetsSkipped),
 		slog.Int("cards_new", r.CardsNew), slog.Int("cards_detailed", r.CardsDetailed),
 		slog.Int("cards_brief", r.CardsBrief), slog.Int("cards_skipped", r.CardsSkipped),
-		slog.Int("variants", r.Variants), slog.Any("failed_sets", r.FailedSets),
+		slog.Int("variants", r.Variants), slog.Int("sets_recovered", r.SetsRecovered),
+		slog.Any("failed_sets", r.FailedSets),
 		slog.Int("species_changed", r.SpeciesChanged),
 		slog.Int("links_changed", r.Links.Changed), slog.Int("links_removed", r.Links.Removed),
 		slog.Int("ko_cards", r.Links.KoCards), slog.Int("links_auto", r.Links.Auto),
@@ -104,18 +108,24 @@ func (r Result) LogValue() slog.Value {
 
 // Collector 는 카탈로그 수집기이다.
 type Collector struct {
-	pool *pgxpool.Pool
-	api  *tcgdex.Client
+	pool      *pgxpool.Pool
+	api       *tcgdex.Client
+	retryWait time.Duration // 실패분 재시도 전 대기 시간
 }
+
+// DefaultRetryWait 는 실행 끝에 실패한 세트·언어를 다시 시도하기 전 대기 시간이다.
+const DefaultRetryWait = 30 * time.Second
 
 // New 는 수집기를 만든다.
 func New(pool *pgxpool.Pool, api *tcgdex.Client) *Collector {
-	return &Collector{pool: pool, api: api}
+	return &Collector{pool: pool, api: api, retryWait: DefaultRetryWait}
 }
 
 // Run 은 opt 범위의 세트·카드를 적재한다.
-// 세트 단위 실패는 Result.FailedSets 에 모으고 계속 진행한다. 세트 목록을 하나도 받지 못했거나
-// 모든 세트가 실패하면 오류를 돌려준다. ctx 가 취소되면 진행 중인 세트를 롤백하고 멈춘다.
+// 세트 단위 실패는 계속 진행하고, 모든 세트를 돈 뒤 DefaultRetryWait 만큼 기다렸다가 실패한 세트와
+// 세트 목록을 받지 못한 언어를 한 번 더 시도한다. 그래도 실패한 것은 Result.FailedSets 에 남는다.
+// 모든 언어의 세트 목록을 받지 못했거나 모든 세트가 실패하면 오류를 돌려준다.
+// ctx 가 취소되면 진행 중인 세트를 롤백하고 멈춘다.
 func (c *Collector) Run(ctx context.Context, opt Options) (Result, error) {
 	start := time.Now()
 	langs := opt.Languages
@@ -129,43 +139,61 @@ func (c *Collector) Run(ctx context.Context, opt Options) (Result, error) {
 	}
 	res.SpeciesChanged = n
 
-	var listErrs []error
-	attempted := 0
+	// 1차: 언어별로 모든 세트를 적재한다. 실패한 언어(세트 목록)·세트는 모아 두었다가 2차에서 한 번 더 시도한다.
+	run := &runState{res: &res, opt: opt, listErrs: map[string]error{}}
 	for _, lang := range langs {
-		sets, err := c.api.ListSets(ctx, lang)
-		if err != nil {
-			if ctx.Err() != nil {
-				return res, ctx.Err()
-			}
-			slog.Error("catalog: list sets failed", "lang", lang, "err", err)
-			listErrs = append(listErrs, fmt.Errorf("%s 세트 목록: %w", lang, err))
-			continue
+		if err := c.collectLang(ctx, run, lang); err != nil {
+			res.Duration = time.Since(start)
+			return res, err
 		}
-		for _, sb := range sets {
-			if len(opt.SetIDs) > 0 && !slices.Contains(opt.SetIDs, sb.ID) {
+	}
+
+	// 2차: 일시 오류(503, 네트워크 끊김)는 시간이 지나면 풀리는 경우가 많아, 잠시 기다린 뒤 실패분만 다시 시도한다.
+	if len(run.failed) > 0 || len(run.listErrs) > 0 {
+		slog.Warn("catalog: retrying failures", "sets", len(run.failed), "languages", len(run.listErrs), "after", c.retryWait)
+		if err := sleepCtx(ctx, c.retryWait); err != nil {
+			res.Duration = time.Since(start)
+			return res, err
+		}
+		failed := run.failed
+		run.failed = nil
+		run.retrying = true
+		for _, lang := range langs {
+			if run.listErrs[lang] == nil {
 				continue
 			}
-			attempted++
-			r, err := c.collectSet(ctx, lang, sb, opt)
-			if err != nil {
-				if ctx.Err() != nil {
-					res.Duration = time.Since(start)
-					return res, ctx.Err()
-				}
-				slog.Error("catalog: set failed", "lang", lang, "set", sb.ID, "err", err)
-				res.FailedSets = append(res.FailedSets, lang+"/"+sb.ID)
-				continue
+			delete(run.listErrs, lang)
+			if err := c.collectLang(ctx, run, lang); err != nil {
+				res.Duration = time.Since(start)
+				return res, err
 			}
-			res.add(r)
+		}
+		for _, f := range failed {
+			if err := c.collectOne(ctx, run, f.lang, f.set); err != nil {
+				res.Duration = time.Since(start)
+				return res, err
+			}
+		}
+	}
+
+	for _, f := range run.failed {
+		res.FailedSets = append(res.FailedSets, f.lang+"/"+f.set.ID)
+	}
+	var listErrs []error
+	for _, lang := range langs {
+		if err := run.listErrs[lang]; err != nil {
+			// 세트 목록을 받지 못한 언어는 "{lang}/*" 로 남긴다 (그 언어 전체가 빠졌다는 뜻).
+			res.FailedSets = append(res.FailedSets, lang+"/*")
+			listErrs = append(listErrs, err)
 		}
 	}
 	if len(listErrs) == len(langs) {
 		res.Duration = time.Since(start)
 		return res, errors.Join(listErrs...)
 	}
-	if attempted > 0 && len(res.FailedSets) == attempted {
+	if run.attempted > 0 && len(run.failed) == run.attempted {
 		res.Duration = time.Since(start)
-		return res, fmt.Errorf("모든 세트(%d개) 적재 실패", attempted)
+		return res, fmt.Errorf("모든 세트(%d개) 적재 실패", run.attempted)
 	}
 
 	// 연결은 적재 순서와 무관하게 DB 전체를 기준으로 매번 다시 맞춘다.
@@ -175,6 +203,79 @@ func (c *Collector) Run(ctx context.Context, opt Options) (Result, error) {
 		return res, fmt.Errorf("한글판 연결: %w", err)
 	}
 	return res, nil
+}
+
+// runState 는 Run 한 번의 진행 상태이다.
+type runState struct {
+	res       *Result
+	opt       Options
+	listErrs  map[string]error // 세트 목록을 받지 못한 언어
+	failed    []failedSet      // 적재에 실패한 세트
+	attempted int              // 적재를 시도한 세트 수 (2차 재시도는 세지 않음)
+	retrying  bool
+}
+
+type failedSet struct {
+	lang string
+	set  tcgdex.SetBrief
+}
+
+// collectLang 은 언어 하나의 세트 목록을 받아 세트마다 적재한다. ctx 취소일 때만 오류를 돌려준다.
+func (c *Collector) collectLang(ctx context.Context, run *runState, lang string) error {
+	sets, err := c.api.ListSets(ctx, lang)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		slog.Error("catalog: list sets failed", "lang", lang, "retry", run.retrying, "err", err)
+		run.listErrs[lang] = fmt.Errorf("%s 세트 목록: %w", lang, err)
+		return nil
+	}
+	for _, sb := range sets {
+		if len(run.opt.SetIDs) > 0 && !slices.Contains(run.opt.SetIDs, sb.ID) {
+			continue
+		}
+		if !run.retrying {
+			run.attempted++
+		}
+		if err := c.collectOne(ctx, run, lang, sb); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// collectOne 은 세트 하나를 적재하고 결과를 모은다. 실패하면 run.failed 에 넣는다. ctx 취소일 때만 오류를 돌려준다.
+func (c *Collector) collectOne(ctx context.Context, run *runState, lang string, sb tcgdex.SetBrief) error {
+	r, err := c.collectSet(ctx, lang, sb, run.opt)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		slog.Error("catalog: set failed", "lang", lang, "set", sb.ID, "retry", run.retrying, "err", err)
+		run.failed = append(run.failed, failedSet{lang: lang, set: sb})
+		return nil
+	}
+	if run.retrying {
+		slog.Info("catalog: set recovered on retry", "lang", lang, "set", sb.ID)
+		run.res.SetsRecovered++
+	}
+	run.res.add(r)
+	return nil
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // syncSpecies 는 내장 종 이름 데이터를 pokemon_species 에 upsert 하고, 바뀐 행 수를 돌려준다 (Q5).
@@ -329,9 +430,10 @@ func (c *Collector) collectSet(ctx context.Context, lang string, sb tcgdex.SetBr
 // upsertCardDetail 은 카드 요약(세트 상세)과 카드 상세로 카드와 변형을 저장하고, upsert 한 변형 수를 돌려준다.
 // 번호·이름·이미지는 세트 상세 값을 쓴다 (매일 갱신하는 값과 같은 출처를 쓰기 위해).
 func upsertCardDetail(ctx context.Context, q *dbq.Queries, setID int64, lang string, cb tcgdex.CardBrief, d *tcgdex.Card) (int, error) {
-	var dex []int32
-	if len(d.DexID) > 0 {
-		dex = d.DexID
+	// 비어 있으면 NULL 로 저장한다 (한글판 연결 규칙에서 "둘 다 없음"으로 비교된다).
+	dex, adjusted := d.DexIDs()
+	if adjusted {
+		slog.Warn("catalog: dexId adjusted to integers", "lang", lang, "card", cb.ID, "raw", d.DexID, "stored", dex)
 	}
 	cardID, err := q.UpsertCard(ctx, dbq.UpsertCardParams{
 		SetID: setID, Language: lang, TcgdexID: cb.ID, LocalID: cb.LocalID, Name: cb.Name,

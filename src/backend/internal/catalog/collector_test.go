@@ -27,6 +27,8 @@ type fakeAPI struct {
 	setDetail   map[string]*tcgdex.Set       // "lang/id"
 	cards       map[string]*tcgdex.Card      // "lang/id"
 	failSet     map[string]bool              // "lang/id" → 500
+	failCount   map[string]int               // "lang/id"·"lang/sets" → 남은 횟수만큼 500 (일시 오류)
+	failList    map[string]bool              // lang → 세트 목록 500
 	cardCalls   int
 	setNotFound map[string]bool
 }
@@ -35,6 +37,7 @@ func newFakeAPI() *fakeAPI {
 	return &fakeAPI{
 		sets: map[string][]tcgdex.SetBrief{}, setDetail: map[string]*tcgdex.Set{},
 		cards: map[string]*tcgdex.Card{}, failSet: map[string]bool{}, setNotFound: map[string]bool{},
+		failCount: map[string]int{}, failList: map[string]bool{},
 	}
 }
 
@@ -61,10 +64,14 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var v any
 	switch {
 	case len(parts) == 2 && parts[1] == "sets":
+		if f.failList[parts[0]] || f.takeFailure(parts[0]+"/sets") {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		v = f.sets[parts[0]]
 	case len(parts) == 3 && parts[1] == "sets":
 		key := parts[0] + "/" + parts[2]
-		if f.failSet[key] {
+		if f.failSet[key] || f.takeFailure(key) {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
@@ -89,6 +96,15 @@ func (f *fakeAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// takeFailure 는 key 의 남은 실패 횟수가 있으면 하나 줄이고 참을 돌려준다. mu 를 잡은 상태에서 부른다.
+func (f *fakeAPI) takeFailure(key string) bool {
+	if f.failCount[key] > 0 {
+		f.failCount[key]--
+		return true
+	}
+	return false
+}
+
 func (f *fakeAPI) resetCardCalls() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -98,8 +114,12 @@ func (f *fakeAPI) resetCardCalls() int {
 }
 
 func card(id, localID, name, rarity string, dex []int32, v tcgdex.Variants) *tcgdex.Card {
+	var raw []float64
+	for _, n := range dex {
+		raw = append(raw, float64(n))
+	}
 	return &tcgdex.Card{
-		ID: id, LocalID: localID, Name: name, Rarity: ptr(rarity), DexID: dex, Variants: &v,
+		ID: id, LocalID: localID, Name: name, Rarity: ptr(rarity), DexID: raw, Variants: &v,
 		Image: ptr("https://assets.tcgdex.net/x/" + id), Category: "Pokemon",
 	}
 }
@@ -123,7 +143,9 @@ func setup(t *testing.T) *env {
 	srv := httptest.NewServer(api)
 	t.Cleanup(srv.Close)
 	client := tcgdex.New(tcgdex.WithBaseURL(srv.URL), tcgdex.WithMinInterval(0), tcgdex.WithRetry(1, time.Millisecond))
-	return &env{ctx: ctx, api: api, pool: pool, c: New(pool, client)}
+	c := New(pool, client)
+	c.retryWait = 0 // 테스트는 실패분 재시도를 기다리지 않는다
+	return &env{ctx: ctx, api: api, pool: pool, c: c}
 }
 
 func (e *env) count(t *testing.T, sql string, args ...any) int {
@@ -330,6 +352,7 @@ func TestCardDetailErrorFailsSet(t *testing.T) {
 	}))
 	defer srvBroken.Close()
 	c := New(e.pool, tcgdex.New(tcgdex.WithBaseURL(srvBroken.URL), tcgdex.WithMinInterval(0), tcgdex.WithRetry(1, time.Millisecond)))
+	c.retryWait = 0
 
 	res, err := c.Run(e.ctx, Options{Languages: []string{"en"}})
 	if err != nil {
@@ -476,7 +499,7 @@ func TestStaleAutoLinkIsRemoved(t *testing.T) {
 	e.run(t, Options{})
 
 	// 일본판 카드의 도감 번호가 바뀌면(데이터 수정) 규칙에 맞지 않아 연결을 지운다.
-	e.api.cards["ja/SV5K-001"].DexID = []int32{4}
+	e.api.cards["ja/SV5K-001"].DexID = []float64{4}
 	res := e.run(t, Options{Languages: []string{"ja"}, Full: true})
 	if res.Links.Removed != 1 || res.Links.Auto != 1 || res.Links.Unlinked != 2 {
 		t.Errorf("Links = %+v", res.Links)
@@ -511,5 +534,61 @@ func TestSpeciesLoadedAndSearchable(t *testing.T) {
 	}
 	if want := []string{"ja/SV5K-001", "ja/SV5K-005", "ko/SV5K-001"}; !slices.Equal(got, want) {
 		t.Errorf("이상해씨 카드 = %v, want %v", got, want)
+	}
+}
+
+func TestTransientSetFailureRecoveredOnRetry(t *testing.T) {
+	e := setup(t)
+	e.seed()
+	// 클라이언트 재시도(1회)까지 두 번 실패하면 1차는 실패, 실행 끝의 재시도에서 성공한다.
+	e.api.failCount["en/base2"] = 2
+
+	res := e.run(t, Options{Languages: []string{"en"}})
+	if len(res.FailedSets) != 0 || res.SetsRecovered != 1 || res.Sets != 2 {
+		t.Fatalf("result = %+v", res)
+	}
+	if n := e.count(t, "SELECT count(*) FROM cards c JOIN sets s ON s.id = c.set_id WHERE s.tcgdex_id = 'base2'"); n != 2 {
+		t.Fatalf("base2 cards = %d, want 2", n)
+	}
+}
+
+func TestListSetsFailure(t *testing.T) {
+	e := setup(t)
+	e.seed()
+
+	// 일시 오류: 실행 끝의 재시도에서 그 언어 전체를 적재한다.
+	e.api.failCount["ja/sets"] = 2
+	res := e.run(t, Options{Languages: []string{"en", "ja"}})
+	if len(res.FailedSets) != 0 || res.Sets != 3 {
+		t.Fatalf("일시 오류 result = %+v", res)
+	}
+
+	// 계속 실패: "{lang}/*" 로 실패 목록에 남는다 (다른 언어는 정상 적재).
+	e.api.failList["ja"] = true
+	res = e.run(t, Options{Languages: []string{"en", "ja"}})
+	if !slices.Equal(res.FailedSets, []string{"ja/*"}) || res.Sets != 2 {
+		t.Fatalf("계속 실패 result = %+v", res)
+	}
+
+	// 모든 언어가 실패하면 오류.
+	e.api.failList["en"] = true
+	if res, err := e.c.Run(e.ctx, Options{Languages: []string{"en", "ja"}}); err == nil || !slices.Equal(res.FailedSets, []string{"en/*", "ja/*"}) {
+		t.Fatalf("err = %v, result = %+v", err, res)
+	}
+}
+
+func TestFractionalDexIDIsStoredAsInteger(t *testing.T) {
+	e := setup(t)
+	c := card("PCG2-067", "067", "レックウザ", "R", nil, tcgdex.Variants{Holo: true})
+	c.DexID = []float64{384.1}
+	e.api.addSet("ja", "PCG2", "伝説の飛翔", c)
+
+	e.run(t, Options{Languages: []string{"ja"}})
+	var dex []int32
+	if err := e.pool.QueryRow(e.ctx, `SELECT dex_ids FROM cards WHERE tcgdex_id = 'PCG2-067'`).Scan(&dex); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(dex, []int32{384}) {
+		t.Fatalf("dex_ids = %v, want [384]", dex)
 	}
 }

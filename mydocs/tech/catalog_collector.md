@@ -241,6 +241,41 @@ TCGdex `variants`는 `normal`, `reverse`, `holo`, `firstEdition`, `wPromo` 다�
 
 새 세대로 종이 추가되면 PokeAPI `data/v2/csv/pokemon_species_names.csv`에서 `local_language_id` 9(`en`)·1(`ja-Hrkt`)·3(`ko`)의 `name`을 도감 번호별로 모아 `dex_id,name_en,name_ja,name_ko` 형식으로 다시 만들고, `LICENSE.pokeapi.md`의 커밋·날짜를 고친다. 다음 카탈로그 작업에서 반영된다.
 
+### 4단계: 수집기 연결과 전체 적재 실측 (2026-11-17)
+
+| 항목 | 구현 |
+|------|------|
+| 작업 | `cmd/collector`의 `collect-daily` 하나. 매일 05:30 KST, 매월 1일은 전체 갱신(`Options.Full`). `-once`·`COLLECTOR_INTERVAL` 실행은 `CATALOG_FULL=true`일 때만 전체 갱신 |
+| 범위 지정 | `CATALOG_LANGUAGES`(en·ja·ko만 허용), `CATALOG_SETS`, `CATALOG_FULL` (개발용, 비우면 전체) |
+| 겹침 방지 | gocron 싱글톤 모드(`LimitModeReschedule`). 실행이 간격보다 길면 끝난 뒤 다음 실행 |
+| 별도 장비 실행 | `scripts/collector.sh` (`setup`·`start`·`stop`·`restart`·`once [-d]`·`full [-d]`·`status`·`logs`), `COLLECTOR_DATABASE_URL`로 외부 DB 적재. 사용법은 `mydocs/manual/collector_remote.md` |
+| 실패 재시도 | 모든 세트를 돈 뒤 30초 기다렸다가 실패한 세트와 세트 목록을 받지 못한 언어를 한 번 더 시도 (`SetsRecovered`). 그래도 실패하면 `FailedSets`에 `{lang}/{id}` 또는 `{lang}/*` |
+| 응답 본문 오류 | 본문을 읽다 끊김·시간 초과는 재시도. JSON 형식·타입 오류는 재시도하지 않음 |
+| 소수 도감 번호 | TCGdex가 `384.1`처럼 주는 값은 정수 부분만 저장하고 `WARN` 로그 (`ja` `PCG2-067` 등 4장, 모두 레쿠쟈) |
+
+#### 실측 (개발 DB, 2026-11-17)
+
+| 항목 | 1차: 빈 DB 첫 적재 | 2차: 갱신 실행 |
+|------|-------------------|----------------|
+| 소요 | 2시간 43분 45초 | 14분 9초 |
+| 처리 세트 | 408 (실패 12, `ko` 목록 실패) | 511 (건너뜀 9, 1개는 재시도로 회복) |
+| 새 카드 | 35,343 | 1,964 (`en` 352, `ja` 1,373, `ko` 239) |
+| 변형 upsert | 46,774 | 2,156 |
+| 재시도 로그 | 85회 (대부분 `503`) | 12회 |
+| 최종 실패 | `en` 4개, `ja` 8개, `ko/*` | 없음 |
+
+- 1차 실패 원인: `503` 3회 재시도 소진(TCGdex 일시 장애), 카드 상세 본문 읽기 중 시간 초과, 소수 도감 번호 해석 오류(`PCG2`·`PCG6`·`PCG7`·`PCG9`), 19:01 DNS 장애로 `ko` 세트 목록 실패. 이 결과로 실패 재시도·본문 오류 재시도·소수 도감 번호 처리를 추가했다.
+- 2차 후 DB: `en` 221세트·23,912장, `ja` 197세트·13,156장, `ko` 91세트·239장, 변형 48,930, 종 1,025, `auto` 연결 239/239(미연결 0), `has_ko_edition` 4,871.
+- 3차(새 카드 없는 갱신 실행): 2분 17초, 재시도 0, 모든 행 수 그대로(세트 509, 카드 37,307, 변형 48,930, 연결 239, `has_ko_edition` 4,871, 종 1,025), 변경 0. 매일 실행은 이와 비슷하고 새 카드 수만큼 늘어난다. 매월 1일 전체 갱신은 1차와 비슷한 약 3시간이다.
+
+### 후속 타스크 인계
+
+| 타스크 | 인계 사항 |
+|--------|-----------|
+| #6 시세 수집 | 가격은 `card_variants` 행에 붙인다. 변형 7종은 TCGCSV `subTypeName`과 1:1 (5절). 시세 작업은 카드가 있어야 하므로 `collect-daily`(05:30 KST) 뒤에 실행한다. 매월 1일 전체 갱신은 약 3시간(08:30 무렵 종료)이라 그날 시세 수집 시각을 정할 때 고려한다. TCGdex는 몇 시간 단위로 `503`을 내므로 같은 재시도 방식(요청 단위 + 실행 끝 재시도)을 쓴다. `tcgdex.Client`는 요청 간격을 클라이언트 전체에서 공유하므로 TCGdex 가격을 받으면 같은 클라이언트를 쓴다 |
+| #7 국내 거래가 | 한글판 카드는 `card_links`(`ko` → `ja`)로 일본판에 연결되어 있다 (현재 239/239 `auto`). 수동 연결은 `method = 'manual'`로 넣으면 수집기가 덮어쓰거나 지우지 않는다. 미연결 `ko` 카드는 `ListUnlinkedKoCards`로 조회한다. TCGdex에 없는 한글판(2024-06 이후 세트, 한국 전용 구성 세트 4개)의 처리 방식을 정한다 |
+| #8 검색·순위 API | 한글 이름 검색은 `pokemon_species.name_ko` → `cards.dex_ids` (`ListCardsByKoSpeciesName`가 출발점). `has_ko_edition`은 일본판 카드의 한글판 존재 표시. `ko` 카드와 최신 일본판 카드는 `image_url`이 `NULL`이다 (한글판은 연결된 일본판 이미지를 쓸 수 있다). 응답 형식은 #12의 `mydocs/tech/api_contract.md` |
+
 ## 참고 자료
 
 - TCGdex FAQ: https://tcgdex.dev/faq
