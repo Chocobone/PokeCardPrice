@@ -209,6 +209,21 @@ TCGdex `variants`는 `normal`, `reverse`, `holo`, `firstEdition`, `wPromo` 다�
 - `ko` 카드 이미지는 없으므로 `image_url`은 `NULL`로 둔다. 화면은 연결된 `ja` 카드 이미지를 쓸 수 있다 (#13).
 - 응답에 `ETag`가 있으나 `Cache-Control: no-store`라, 조건부 요청(`If-None-Match`)은 쓰지 않는다.
 
+## 구현 결과
+
+### 2단계: TCGdex 클라이언트와 en·ja 적재 (2026-11-17)
+
+| 항목 | 구현 |
+|------|------|
+| 클라이언트 | `internal/tcgdex`. 요청 간 최소 250ms(클라이언트 전체 공유), 재시도는 네트워크 오류·`429`·`5xx`만 최대 3회(1s→2s→4s, `Retry-After` 초 단위·최대 30초), `404` → `ErrNotFound`, User-Agent `PokeCardPrice-collector/0.1`. 의존성 추가 없음 |
+| 상세 호출 범위 | 세트 상세는 매번, 카드 상세는 DB에 없는 카드만 (`ListCardTcgdexIDsBySet`). `Options.Full`이면 전체. 카드 상세 동시성 2 |
+| 기존 카드 갱신 | `UpdateCardBrief`로 번호·이름·이미지만, 값이 바뀐 경우에만 갱신 |
+| 트랜잭션 | 외부 호출을 마친 뒤 세트 하나 = 트랜잭션 하나. 실패 세트만 롤백하고 `FailedSets`에 기록 |
+| 404 | 세트 상세 404 → 세트 건너뜀(`SetsSkipped`), 신규 카드 상세 404 → 카드 건너뜀(`CardsSkipped`). 다음 실행에서 다시 시도 |
+| 변형 | `MapVariants` (5절 표). 변형 값이 없으면 `normal` 하나, `wPromo`는 저장하지 않고 로그 |
+
+표본 적재(개발 DB): `en` `base2` 64장·변형 130, `exu` 28장·28, `sv03.5` 207장·362, `ja` `SV4K` 95장·95. 세트별 카드 수가 `cardCount.total`과 같고, 재실행 시 행이 늘지 않았다 (2.5초). `ja` `SV4K`의 67번 이후 29장은 TCGdex에 희귀도가 없다.
+
 ## 참고 자료
 
 - TCGdex FAQ: https://tcgdex.dev/faq

@@ -1,0 +1,40 @@
+{
+ "category": "Pokemon",
+ "id": "SV4K-001",
+ "illustrator": "Jerky",
+ "image": "https://assets.tcgdex.net/ja/SV/SV4K/001",
+ "localId": "001",
+ "name": "ヤナップ",
+ "rarity": "Common",
+ "set": {
+  "cardCount": {
+   "official": 66,
+   "total": 95
+  },
+  "id": "SV4K",
+  "name": "古代の咆哮"
+ },
+ "variants": {
+  "firstEdition": false,
+  "holo": false,
+  "normal": true,
+  "reverse": false,
+  "wPromo": false
+ },
+ "dexId": [
+  511
+ ],
+ "hp": 70,
+ "types": [
+  "Grass"
+ ],
+ "description": "木の実を 探すのが 上手で あちこちで 集めて 仲間に 分け与える 優しさを 持つ。",
+ "stage": "Basic",
+ "retreat": 1,
+ "regulationMark": "G",
+ "legal": {
+  "standard": false,
+  "expanded": false
+ },
+ "updated": "2026-11-07T23:46:57.091Z"
+}

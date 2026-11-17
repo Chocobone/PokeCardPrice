@@ -37,3 +37,24 @@ SELECT * FROM cards WHERE id = @id;
 
 -- name: ListCardVariants :many
 SELECT * FROM card_variants WHERE card_id = @card_id ORDER BY id;
+
+-- name: ListCardTcgdexIDsBySet :many
+-- 카탈로그 수집기(#5): 이미 적재한 카드를 골라내 신규 카드만 상세 조회한다 (Q1).
+SELECT c.tcgdex_id
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+WHERE s.language = @language AND s.tcgdex_id = @set_tcgdex_id;
+
+-- name: UpdateCardBrief :execrows
+-- 세트 상세의 카드 요약(번호·이름·이미지)만 갱신한다. 희귀도·도감 번호는 카드 상세에만 있어 건드리지 않는다.
+-- 값이 같으면 갱신하지 않아 updated_at 이 실제 변경 시각을 나타낸다.
+UPDATE cards
+SET local_id = @local_id,
+    name = @name,
+    image_url = @image_url,
+    updated_at = now()
+WHERE language = @language
+  AND tcgdex_id = @tcgdex_id
+  AND (local_id IS DISTINCT FROM @local_id
+       OR name IS DISTINCT FROM @name
+       OR image_url IS DISTINCT FROM @image_url);

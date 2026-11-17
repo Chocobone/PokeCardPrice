@@ -34,6 +34,39 @@ func (q *Queries) GetCard(ctx context.Context, id int64) (Card, error) {
 	return i, err
 }
 
+const listCardTcgdexIDsBySet = `-- name: ListCardTcgdexIDsBySet :many
+SELECT c.tcgdex_id
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+WHERE s.language = $1 AND s.tcgdex_id = $2
+`
+
+type ListCardTcgdexIDsBySetParams struct {
+	Language    string
+	SetTcgdexID string
+}
+
+// 카탈로그 수집기(#5): 이미 적재한 카드를 골라내 신규 카드만 상세 조회한다 (Q1).
+func (q *Queries) ListCardTcgdexIDsBySet(ctx context.Context, arg ListCardTcgdexIDsBySetParams) ([]string, error) {
+	rows, err := q.db.Query(ctx, listCardTcgdexIDsBySet, arg.Language, arg.SetTcgdexID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var tcgdex_id string
+		if err := rows.Scan(&tcgdex_id); err != nil {
+			return nil, err
+		}
+		items = append(items, tcgdex_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCardVariants = `-- name: ListCardVariants :many
 SELECT id, card_id, variant, created_at FROM card_variants WHERE card_id = $1 ORDER BY id
 `
@@ -61,6 +94,43 @@ func (q *Queries) ListCardVariants(ctx context.Context, cardID int64) ([]CardVar
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateCardBrief = `-- name: UpdateCardBrief :execrows
+UPDATE cards
+SET local_id = $1,
+    name = $2,
+    image_url = $3,
+    updated_at = now()
+WHERE language = $4
+  AND tcgdex_id = $5
+  AND (local_id IS DISTINCT FROM $1
+       OR name IS DISTINCT FROM $2
+       OR image_url IS DISTINCT FROM $3)
+`
+
+type UpdateCardBriefParams struct {
+	LocalID  string
+	Name     string
+	ImageUrl *string
+	Language string
+	TcgdexID string
+}
+
+// 세트 상세의 카드 요약(번호·이름·이미지)만 갱신한다. 희귀도·도감 번호는 카드 상세에만 있어 건드리지 않는다.
+// 값이 같으면 갱신하지 않아 updated_at 이 실제 변경 시각을 나타낸다.
+func (q *Queries) UpdateCardBrief(ctx context.Context, arg UpdateCardBriefParams) (int64, error) {
+	result, err := q.db.Exec(ctx, updateCardBrief,
+		arg.LocalID,
+		arg.Name,
+		arg.ImageUrl,
+		arg.Language,
+		arg.TcgdexID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertCard = `-- name: UpsertCard :one
