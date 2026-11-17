@@ -113,6 +113,8 @@ interface MoversResponse {
 
 - `.env.development`의 `VITE_API_MOCK=true`이면 `src/api/cards.ts`가 목업을 쓴다. 화면·스토어는 목업 여부를 모른다. 운영 빌드(`.env.development` 미적용)에서는 목업 코드가 번들에 들어가지 않는다.
 - 응답 지연 300ms, 요청 취소(`AbortSignal`) 지원. 검색어 `__error`는 500 오류를 흉내 낸다.
+- 상황 전환 (개발용): 주소에 `?mock=empty`를 붙이면 모든 목업 응답이 빈 결과, `?mock=error`면 500 오류가 된다. 빈 상태·오류 화면 확인용이다.
+- 호출 수: `globalThis.__mockStats` (`{ search, movers }`). 캐시 동작 확인용이다.
 - 카드 정보는 개발 DB 표본, 가격·변동률은 카드 ID로 만든 임의 값이다(같은 카드는 늘 같은 값). 약 12%의 카드는 시세 없음(`price: null`)으로 둔다.
 
 #### 목업 데이터

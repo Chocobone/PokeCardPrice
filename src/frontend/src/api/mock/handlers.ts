@@ -20,6 +20,20 @@ export const MOCK_ERROR_QUERY = '__error'
 const AS_OF = '2026-11-16'
 const PREV_DAYS: Record<MoversParams['period'], number> = { '7d': 7, '30d': 30 }
 
+/** 목업 호출 수 (개발 확인용). */
+export const mockStats = { search: 0, movers: 0 }
+// 개발 확인 도구(헤드리스 브라우저)가 모듈 경로와 상관없이 읽을 수 있게 전역에도 둔다.
+Object.assign(globalThis, { __mockStats: mockStats })
+
+/**
+ * 개발용 상황 전환. 주소에 ?mock=empty 또는 ?mock=error 를 붙이면 모든 목업 응답이 빈 결과·서버 오류가 된다.
+ * 화면의 빈 상태·오류 상태를 확인할 때 쓴다. 목업 코드라 운영 빌드에는 없다.
+ */
+function scenario(): 'empty' | 'error' | null {
+  const v = new URLSearchParams(globalThis.location?.search ?? '').get('mock')
+  return v === 'empty' || v === 'error' ? v : null
+}
+
 /** 같은 입력이면 같은 값을 내는 0~1 난수 (mulberry32). */
 function rand(seed: number): number {
   let t = (seed + 0x6d2b79f5) | 0
@@ -87,6 +101,8 @@ function matchToken(card: MockCard, token: string): boolean {
 
 export async function searchCards(params: SearchParams, signal?: AbortSignal): Promise<Page<CardSummary>> {
   await delay(signal)
+  mockStats.search++
+  if (scenario() === 'error') throw new ApiError(500, 'internal', '목업 서버 오류')
   const q = params.q.trim()
   if (q === MOCK_ERROR_QUERY) throw new ApiError(500, 'internal', '목업 서버 오류')
   if (q.length === 0 || q.length > 100) throw new ApiError(400, 'invalid_query', '검색어는 1~100자여야 합니다')
@@ -94,7 +110,7 @@ export async function searchCards(params: SearchParams, signal?: AbortSignal): P
   const size = Math.min(60, Math.max(1, params.size ?? 24))
   const tokens = norm(q).split(/\s+/)
   const hits = MOCK_CARDS.filter(
-    (c) => (!params.lang || c.language === params.lang) && tokens.every((t) => matchToken(c, t)),
+    (c) => scenario() !== 'empty' && (!params.lang || c.language === params.lang) && tokens.every((t) => matchToken(c, t)),
   )
   return {
     items: hits.slice((page - 1) * size, page * size).map(withPrice),
@@ -106,6 +122,9 @@ export async function searchCards(params: SearchParams, signal?: AbortSignal): P
 
 export async function getMovers(params: MoversParams, signal?: AbortSignal): Promise<MoversResponse> {
   await delay(signal)
+  mockStats.movers++
+  if (scenario() === 'error') throw new ApiError(500, 'internal', '목업 서버 오류')
+  if (scenario() === 'empty') return { period: params.period, direction: params.direction, asOf: null, items: [] }
   const limit = Math.min(50, Math.max(1, params.limit ?? 10))
   const days = PREV_DAYS[params.period]
   const movers: Mover[] = []

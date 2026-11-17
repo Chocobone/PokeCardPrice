@@ -1,5 +1,13 @@
 <script setup lang="ts">
+import { computed } from 'vue'
+import { useRoute } from 'vue-router'
+
+import SearchBox from '@/components/SearchBox.vue'
 import { SITE_NAME } from '@/router'
+
+// 홈에는 큰 검색창이 있어 헤더 검색창을 숨긴다.
+const route = useRoute()
+const showSearch = computed(() => route.name !== 'home')
 </script>
 
 <template>
@@ -16,8 +24,12 @@ import { SITE_NAME } from '@/router'
         >◆</span>
         {{ SITE_NAME }}
       </RouterLink>
-      <!-- 검색창은 3단계에서 SearchBox 로 채운다 -->
-      <div class="header-search" />
+      <div
+        v-if="showSearch"
+        class="header-search"
+      >
+        <SearchBox variant="compact" />
+      </div>
     </div>
   </header>
 </template>
@@ -33,9 +45,11 @@ import { SITE_NAME } from '@/router'
 
 .header-inner {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-2) var(--space-4);
   min-height: var(--header-height);
+  padding-block: var(--space-2);
 }
 
 .brand {
@@ -53,8 +67,17 @@ import { SITE_NAME } from '@/router'
   color: var(--color-accent);
 }
 
+/* 모바일: 검색창은 다음 줄 전체 폭. 640px 이상: 이름 옆 */
 .header-search {
-  flex: 1;
+  flex: 1 1 100%;
   min-width: 0;
+}
+
+@media (min-width: 640px) {
+  .header-search {
+    flex: 1 1 auto;
+    max-width: 480px;
+    margin-left: auto;
+  }
 }
 </style>
