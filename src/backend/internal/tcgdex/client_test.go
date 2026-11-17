@@ -228,3 +228,60 @@ func TestContextCancelStopsWaiting(t *testing.T) {
 		t.Fatal("did not stop on context cancel")
 	}
 }
+
+func TestFractionalDexID(t *testing.T) {
+	// TCGdex 는 일부 카드의 도감 번호를 384.1 처럼 소수로 준다 (ja PCG2-067 등).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"id":"PCG2-067","localId":"067","name":"レックウザ","dexId":[384.1,384,0]}`))
+	}))
+	defer srv.Close()
+	card, err := newTestClient(srv).GetCard(context.Background(), "ja", "PCG2-067")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, adjusted := card.DexIDs()
+	if len(ids) != 1 || ids[0] != 384 || !adjusted {
+		t.Fatalf("DexIDs() = %v, %v", ids, adjusted)
+	}
+	if ids, adjusted := (&Card{DexID: []float64{25, 26}}).DexIDs(); len(ids) != 2 || adjusted {
+		t.Fatalf("정수 도감 번호 DexIDs() = %v, %v", ids, adjusted)
+	}
+	if ids, _ := (&Card{}).DexIDs(); ids != nil {
+		t.Fatalf("도감 번호 없음 DexIDs() = %v, want nil", ids)
+	}
+}
+
+func TestTruncatedBodyIsRetried(t *testing.T) {
+	// 본문을 읽다 연결이 끊기면(시간 초과·끊김) 전송 오류로 보고 재시도한다.
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Content-Length", "200")
+			_, _ = w.Write([]byte(`{"id":"ex9-84","name":`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"id":"ex9-84","localId":"84","name":"Pikachu"}`))
+	}))
+	defer srv.Close()
+	card, err := newTestClient(srv).GetCard(context.Background(), "en", "ex9-84")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Name != "Pikachu" || calls.Load() != 2 {
+		t.Fatalf("card = %+v, calls = %d", card, calls.Load())
+	}
+}
+
+func TestInvalidJSONIsNotRetried(t *testing.T) {
+	// 형식·타입 오류는 다시 받아도 같으므로 재시도하지 않는다.
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_, _ = w.Write([]byte(`{"id":1}`))
+	}))
+	defer srv.Close()
+	_, err := newTestClient(srv).GetCard(context.Background(), "en", "x")
+	if err == nil || calls.Load() != 1 {
+		t.Fatalf("err = %v, calls = %d (want 오류, 1회)", err, calls.Load())
+	}
+}

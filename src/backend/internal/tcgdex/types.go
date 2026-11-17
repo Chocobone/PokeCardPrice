@@ -1,6 +1,10 @@
 package tcgdex
 
-import "time"
+import (
+	"math"
+	"slices"
+	"time"
+)
 
 // 응답 타입은 카탈로그 적재에 쓰는 필드만 정의한다 (mydocs/tech/catalog_collector.md 2절).
 // 응답에 없을 수 있는 필드는 포인터로 받는다.
@@ -58,17 +62,34 @@ type CardBrief struct {
 
 // Card 는 카드 상세(/{lang}/cards/{id})이다.
 type Card struct {
-	ID       string    `json:"id"`
-	LocalID  string    `json:"localId"`
-	Name     string    `json:"name"`
-	Image    *string   `json:"image"`
-	Category string    `json:"category"` // Pokemon, Trainer, Energy
-	Rarity   *string   `json:"rarity"`
-	DexID    []int32   `json:"dexId"`
+	ID       string  `json:"id"`
+	LocalID  string  `json:"localId"`
+	Name     string  `json:"name"`
+	Image    *string `json:"image"`
+	Category string  `json:"category"` // Pokemon, Trainer, Energy
+	Rarity   *string `json:"rarity"`
+	// DexID 는 도감 번호이다. 일부 카드는 384.1 처럼 소수로 오므로 실수로 받는다 (DexIDs 로 정수화).
+	DexID    []float64 `json:"dexId"`
 	Variants *Variants `json:"variants"`
 	Set      struct {
 		ID string `json:"id"`
 	} `json:"set"`
+}
+
+// DexIDs 는 도감 번호를 정수로 돌려준다. 소수는 정수 부분만 쓰고(384.1 → 384), 0 이하는 버리며,
+// 중복은 한 번만 넣는다. adjusted 는 소수·0 이하·중복을 고쳤는지 알려 준다 (호출 측에서 로그).
+func (c *Card) DexIDs() (ids []int32, adjusted bool) {
+	for _, v := range c.DexID {
+		n := int32(math.Floor(v))
+		if float64(n) != v || n <= 0 || slices.Contains(ids, n) {
+			adjusted = true
+			if n <= 0 || slices.Contains(ids, n) {
+				continue
+			}
+		}
+		ids = append(ids, n)
+	}
+	return ids, adjusted
 }
 
 // Variants 는 카드에 있는 변형 종류이다.

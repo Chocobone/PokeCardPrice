@@ -166,7 +166,17 @@ func (c *Client) do(ctx context.Context, u string, out any) (time.Duration, erro
 	switch {
 	case resp.StatusCode == http.StatusOK:
 		if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-			return 0, fmt.Errorf("%s: 응답 해석: %w", u, err)
+			if ctx.Err() != nil {
+				return 0, ctx.Err()
+			}
+			// JSON 형식·타입 오류는 다시 받아도 같으므로 재시도하지 않는다.
+			// 그 밖(본문을 읽다 끊김·시간 초과)은 전송 오류라 재시도한다.
+			var syntaxErr *json.SyntaxError
+			var typeErr *json.UnmarshalTypeError
+			if errors.As(err, &syntaxErr) || errors.As(err, &typeErr) {
+				return 0, fmt.Errorf("%s: 응답 해석: %w", u, err)
+			}
+			return 0, &retryableError{fmt.Errorf("응답 본문 읽기: %w", err)}
 		}
 		return 0, nil
 	case resp.StatusCode == http.StatusNotFound:

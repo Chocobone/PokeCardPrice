@@ -264,10 +264,10 @@ TCGCSV가 TCGplayer 데이터를 재공개할 권한이 있는지, TCGplayer 약
 | 사항 | 담당 |
 |------|------|
 | TCGCSV 재공개 권한·TCGplayer 약관 허용 여부 | 작업지시자가 사용 결정 (2026-11-02). 공개 배포 전 재확인 권장 |
-| TCGdex 가격·이미지 이용 조건, 호출 한도 | #5, #6 구현 전 재확인 |
-| TCGdex `pricing.tcgplayer`가 모두 `null`인 원인 | #6 (TCGCSV 사용 시 영향 없음) |
-| 한글판·일본판 세트 코드·번호 일치 범위 | #5 |
-| 한글판 카드 이름 (TCGdex `ko` 미수록 카드) | #5 |
+| TCGdex 가격·이미지 이용 조건, 호출 한도 | #5에서 재확인 (2026-11-10): 호출 한도 비공개, 로컬 캐시 권장 → 요청 간격 250ms·동시성 2·신규 카드만 상세 조회로 대응. 이미지 이용 조건은 공개 배포 전 재확인 (#16). `catalog_collector.md` 1절 |
+| TCGdex `pricing.tcgplayer`가 모두 `null`인 원인 | #6 (TCGCSV 사용 시 영향 없음). #5 조사(2026-11-10)에서 다시 채워진 것을 확인 (`catalog_collector.md` 8절) |
+| 한글판·일본판 세트 코드·번호 일치 범위 | #5 완료: `ko` 세트 91/95가 `ja`와 ID 일치, `ko` 카드 239장 모두 같은 ID·`dexId`의 `ja` 카드와 자동 연결 (`catalog_collector.md` 4절·구현 결과) |
+| 한글판 카드 이름 (TCGdex `ko` 미수록 카드) | #5 확인: 해외 공개 소스로는 얻을 수 없음. 포켓몬 카드는 한글 종 이름(`pokemon_species`)으로 검색 보완, 트레이너스·에너지는 범위 밖 (`catalog_collector.md` 7절) |
 | Frankfurter 호출 한도·공휴일 동작 | #6 |
 
 ## 참고 자료

@@ -48,10 +48,15 @@ services:
     restart: unless-stopped
     environment:
       APP: collector
-      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable
+      # 다른 장비의 DB 에 적재할 때 .env 에 COLLECTOR_DATABASE_URL 을 지정한다 (scripts/collector.sh). 비우면 이 compose 의 db.
+      DATABASE_URL: ${COLLECTOR_DATABASE_URL:-postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable}
       TZ: Asia/Seoul
       # 개발 중 일정 대신 짧은 간격으로 실행하려면 .env 에 COLLECTOR_INTERVAL=30s 처럼 지정한다.
       COLLECTOR_INTERVAL: ${COLLECTOR_INTERVAL:-}
+      # 카탈로그 수집 범위 (개발용, 비우면 전체). 예: CATALOG_LANGUAGES=en,ja CATALOG_SETS=sv03.5,SV5K
+      CATALOG_LANGUAGES: ${CATALOG_LANGUAGES:-}
+      CATALOG_SETS: ${CATALOG_SETS:-}
+      CATALOG_FULL: ${CATALOG_FULL:-}
     volumes:
       - ../src/backend:/app
       - go-mod:/go/pkg/mod

@@ -611,7 +611,7 @@ CREATE INDEX cards_dex_ids_idx ON cards USING gin (dex_ids);
 
 | 파일 | 쿼리 | 쓰는 타스크 |
 |------|------|-------------|
-| `catalog.sql` | `UpsertSet`, `UpsertCard`, `UpsertCardVariant`, `GetCard`, `ListCardVariants` | #5, #8 |
+| `catalog.sql` | `UpsertSet`, `UpsertCard`, `UpsertCardVariant`, `GetCard`, `ListCardVariants`. #5 추가: `ListCardTcgdexIDsBySet`, `UpdateCardBrief`(요약 필드만 갱신), `UpsertPokemonSpecies`, `UpsertAutoCardLinks`, `DeleteStaleAutoCardLinks`, `ListUnlinkedKoCards`, `SetHasKoEdition`, `GetKoLinkStats`, `ListCardsByKoSpeciesName` (근거: `catalog_collector.md`) | #5, #8 |
 | `prices.sql` | `GetPriceSourceByCode`, `UpsertExternalID`, `FindVariantByExternalID`, `UpsertPriceHistory`(`:batchexec`, pgx 배치), `ListPriceHistory`, `UpsertFxRate`, `GetFxRateOnOrBefore` | #6, #7, #8 |
 | `users.sql` | `CreateUser`, `GetUserByEmail`, `UpsertCollectionItem`, `ListCollectionItems`, `CreateUserTrade` | #9, #10 |
 
