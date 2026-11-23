@@ -30,11 +30,38 @@ type Options struct {
 	Languages []string
 	// SetIDs 는 TCGdex 세트 ID 이다 (언어 공통).
 	SetIDs []string
+	// TCGCSVGroups 는 TCGCSV 그룹 ID 이다. SetIDs 와 함께 주면 둘 중 하나에 맞는 그룹을 받는다.
+	// 영어판 그룹은 이름 코드가 TCGdex 세트 ID 와 달라 SetIDs 만으로 고르기 어려워 따로 둔다.
+	TCGCSVGroups []int
+
+	// done 은 Runner 가 채운다. 이번 실행의 작업마다 끝나면 닫히는 채널이다.
+	done map[string]chan struct{}
 }
 
 // wantSource 는 code 작업을 실행할지 알려 준다.
 func (o Options) wantSource(code string) bool {
 	return len(o.Sources) == 0 || slices.Contains(o.Sources, code)
+}
+
+// wantLanguage 는 카드 언어 lang 을 수집할지 알려 준다.
+func (o Options) wantLanguage(lang string) bool {
+	return len(o.Languages) == 0 || slices.Contains(o.Languages, lang)
+}
+
+// waitFor 는 같은 실행의 code 작업이 끝날 때까지 기다린다 (성공·실패와 무관).
+// code 작업이 이번 실행에 없으면 바로 돌아오고 ran 이 거짓이다.
+// 작업끼리 서로 기다리면 교착되므로, 기다리는 방향은 TCGCSV → TCGdex 하나만 쓴다.
+func (o Options) waitFor(ctx context.Context, code string) (ran bool, err error) {
+	ch, ok := o.done[code]
+	if !ok {
+		return false, nil
+	}
+	select {
+	case <-ch:
+		return true, nil
+	case <-ctx.Done():
+		return true, ctx.Err()
+	}
 }
 
 // Result 는 작업 하나의 실행 요약이다.

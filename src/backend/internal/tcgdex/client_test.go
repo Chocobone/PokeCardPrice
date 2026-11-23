@@ -285,3 +285,48 @@ func TestInvalidJSONIsNotRetried(t *testing.T) {
 		t.Fatalf("err = %v, calls = %d (want 오류, 1회)", err, calls.Load())
 	}
 }
+
+func TestTCGPlayerPricing(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.Handle("GET /en/cards/sv03.5-001", serveFile(t, "card_en_sv03.5-001_pricing.json"))
+	mux.Handle("GET /ja/cards/SV4K-001", serveFile(t, "card_ja_SV4K-001.json"))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c := newTestClient(srv)
+
+	card, err := c.GetCard(context.Background(), "en", "sv03.5-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := card.TCGPlayer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p == nil || p.Unit != "USD" || len(p.Variants) != 2 {
+		t.Fatalf("pricing = %+v", p)
+	}
+	n, r := p.Variants["normal"], p.Variants["reverse-holofoil"]
+	if n.ProductID != 502552 || r.ProductID != 502552 || n.Market == nil || *n.Market != 0.27 {
+		t.Fatalf("normal=%+v reverse=%+v", n, r)
+	}
+
+	// pricing 이 null 인 카드
+	card, err = c.GetCard(context.Background(), "ja", "SV4K-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, err := card.TCGPlayer(); p != nil || err != nil {
+		t.Fatalf("ja pricing = %+v, %v", p, err)
+	}
+	// tcgplayer 가 null 이거나 형식이 다른 경우
+	for raw, wantErr := range map[string]bool{
+		`{"tcgplayer":null,"cardmarket":{}}`:                      false,
+		`{"tcgplayer":{"unit":"USD","normal":{"productId":"x"}}}`: true,
+	} {
+		card := Card{Pricing: []byte(raw)}
+		p, err := card.TCGPlayer()
+		if (err != nil) != wantErr || (!wantErr && p != nil) {
+			t.Errorf("%s: p=%+v err=%v", raw, p, err)
+		}
+	}
+}

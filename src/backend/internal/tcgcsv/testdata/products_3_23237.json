@@ -1,0 +1,156 @@
+{
+ "totalItems": 5,
+ "success": true,
+ "errors": [],
+ "results": [
+  {
+   "productId": 501999,
+   "name": "151 Pokemon Center Elite Trainer Box (Exclusive)",
+   "cleanName": "151 Pokemon Center Elite Trainer Box Exclusive",
+   "imageUrl": "https://tcgplayer-cdn.tcgplayer.com/product/501999_200w.jpg",
+   "categoryId": 3,
+   "groupId": 23237,
+   "url": "https://www.tcgplayer.com/product/501999/pokemon-sv-scarlet-and-violet-151-151-pokemon-center-elite-trainer-box-exclusive",
+   "modifiedOn": "2026-02-19T18:47:19.317",
+   "imageCount": 1,
+   "presaleInfo": {
+    "isPresale": false,
+    "releasedOn": null,
+    "note": null
+   },
+   "extendedData": []
+  },
+  {
+   "productId": 502552,
+   "name": "Bulbasaur - 001/165",
+   "cleanName": "Bulbasaur 001 165",
+   "imageUrl": "https://tcgplayer-cdn.tcgplayer.com/product/502552_200w.jpg",
+   "categoryId": 3,
+   "groupId": 23237,
+   "url": "https://www.tcgplayer.com/product/502552/pokemon-sv-scarlet-and-violet-151-bulbasaur-001-165",
+   "modifiedOn": "2026-08-11T02:05:01.42",
+   "imageCount": 1,
+   "presaleInfo": {
+    "isPresale": false,
+    "releasedOn": null,
+    "note": null
+   },
+   "extendedData": [
+    {
+     "name": "Number",
+     "displayName": "Card Number",
+     "value": "001/165"
+    },
+    {
+     "name": "Rarity",
+     "displayName": "Rarity",
+     "value": "Common"
+    },
+    {
+     "name": "Card Type",
+     "displayName": "Card Type",
+     "value": "Grass"
+    }
+   ]
+  },
+  {
+   "productId": 502553,
+   "name": "Ivysaur - 002/165",
+   "cleanName": "Ivysaur 002 165",
+   "imageUrl": "https://tcgplayer-cdn.tcgplayer.com/product/502553_200w.jpg",
+   "categoryId": 3,
+   "groupId": 23237,
+   "url": "https://www.tcgplayer.com/product/502553/pokemon-sv-scarlet-and-violet-151-ivysaur-002-165",
+   "modifiedOn": "2026-07-09T22:31:19.427",
+   "imageCount": 1,
+   "presaleInfo": {
+    "isPresale": false,
+    "releasedOn": null,
+    "note": null
+   },
+   "extendedData": [
+    {
+     "name": "Number",
+     "displayName": "Card Number",
+     "value": "002/165"
+    },
+    {
+     "name": "Rarity",
+     "displayName": "Rarity",
+     "value": "Uncommon"
+    },
+    {
+     "name": "Card Type",
+     "displayName": "Card Type",
+     "value": "Grass"
+    }
+   ]
+  },
+  {
+   "productId": 517051,
+   "name": "Mew ex - 205/165",
+   "cleanName": "Mew ex 205 165",
+   "imageUrl": "https://tcgplayer-cdn.tcgplayer.com/product/517051_200w.jpg",
+   "categoryId": 3,
+   "groupId": 23237,
+   "url": "https://www.tcgplayer.com/product/517051/pokemon-sv-scarlet-and-violet-151-mew-ex-205-165",
+   "modifiedOn": "2026-07-14T21:22:30.8",
+   "imageCount": 1,
+   "presaleInfo": {
+    "isPresale": false,
+    "releasedOn": null,
+    "note": null
+   },
+   "extendedData": [
+    {
+     "name": "Number",
+     "displayName": "Card Number",
+     "value": "205/165"
+    },
+    {
+     "name": "Rarity",
+     "displayName": "Rarity",
+     "value": "Hyper Rare"
+    },
+    {
+     "name": "Card Type",
+     "displayName": "Card Type",
+     "value": "Psychic"
+    }
+   ]
+  },
+  {
+   "productId": 519481,
+   "name": "Mew ex - 205/165 (151 Metal Card)",
+   "cleanName": "Mew ex 205 165 151 Metal Card",
+   "imageUrl": "https://tcgplayer-cdn.tcgplayer.com/product/519481_200w.jpg",
+   "categoryId": 3,
+   "groupId": 23237,
+   "url": "https://www.tcgplayer.com/product/519481/pokemon-sv-scarlet-and-violet-151-mew-ex-205-165-151-metal-card",
+   "modifiedOn": "2025-12-05T22:51:47.443",
+   "imageCount": 1,
+   "presaleInfo": {
+    "isPresale": false,
+    "releasedOn": null,
+    "note": null
+   },
+   "extendedData": [
+    {
+     "name": "Number",
+     "displayName": "Card Number",
+     "value": "205/165"
+    },
+    {
+     "name": "Rarity",
+     "displayName": "Rarity",
+     "value": "Double Rare"
+    },
+    {
+     "name": "Card Type",
+     "displayName": "Card Type",
+     "value": "Psychic"
+    }
+   ]
+  }
+ ]
+}

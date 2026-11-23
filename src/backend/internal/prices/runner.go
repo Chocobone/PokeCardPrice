@@ -24,16 +24,20 @@ func NewRunner(sources ...Source) *Runner { return &Runner{sources: sources} }
 // 오류는 실패한 작업들의 오류를 합친 것이다.
 func (r *Runner) Run(ctx context.Context, opt Options) ([]Result, error) {
 	var run []Source
+	opt.done = map[string]chan struct{}{}
 	for _, s := range r.sources {
-		if opt.wantSource(s.Code()) {
-			run = append(run, s)
+		if _, dup := opt.done[s.Code()]; dup || !opt.wantSource(s.Code()) {
+			continue
 		}
+		run = append(run, s)
+		opt.done[s.Code()] = make(chan struct{})
 	}
 	results := make([]Result, len(run))
 	errs := make([]error, len(run))
 	var wg sync.WaitGroup
 	for i, s := range run {
 		wg.Go(func() {
+			defer close(opt.done[s.Code()])
 			results[i], errs[i] = collectSafely(ctx, s, opt)
 		})
 	}

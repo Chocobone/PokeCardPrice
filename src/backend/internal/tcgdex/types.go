@@ -1,6 +1,8 @@
 package tcgdex
 
 import (
+	"encoding/json"
+	"fmt"
 	"math"
 	"slices"
 	"time"
@@ -74,6 +76,70 @@ type Card struct {
 	Set      struct {
 		ID string `json:"id"`
 	} `json:"set"`
+	// Pricing 은 가격 정보 원본이다 (#6). 카탈로그 적재가 가격 필드 형식 변화로 실패하지 않도록
+	// 여기서는 해석하지 않고, 시세 수집기가 TCGPlayerPricing 등으로 따로 해석한다.
+	Pricing json.RawMessage `json:"pricing"`
+}
+
+// TCGPlayerPrice 는 TCGplayer 상품·하위 유형 하나의 가격이다 (USD).
+type TCGPlayerPrice struct {
+	ProductID int      `json:"productId"`
+	Low       *float64 `json:"lowPrice"`
+	Mid       *float64 `json:"midPrice"`
+	High      *float64 `json:"highPrice"`
+	Market    *float64 `json:"marketPrice"`
+	DirectLow *float64 `json:"directLowPrice"`
+}
+
+// TCGPlayerPricing 은 카드 상세 pricing.tcgplayer 이다. 키는 TCGplayer 하위 유형이다
+// (normal, holofoil, reverse-holofoil, 1st-edition, 1st-edition-holofoil, unlimited, unlimited-holofoil).
+type TCGPlayerPricing struct {
+	Unit     string
+	Updated  string
+	Variants map[string]TCGPlayerPrice
+}
+
+// TCGPlayer 는 pricing.tcgplayer 를 해석한다. 값이 없으면 nil 이다.
+// unit·updated 외의 키 중 객체가 아닌 값은 건너뛴다.
+func (c *Card) TCGPlayer() (*TCGPlayerPricing, error) {
+	if len(c.Pricing) == 0 || string(c.Pricing) == "null" {
+		return nil, nil
+	}
+	var p struct {
+		TCGPlayer map[string]json.RawMessage `json:"tcgplayer"`
+	}
+	if err := json.Unmarshal(c.Pricing, &p); err != nil {
+		return nil, fmt.Errorf("pricing: %w", err)
+	}
+	if p.TCGPlayer == nil {
+		return nil, nil
+	}
+	out := &TCGPlayerPricing{Variants: map[string]TCGPlayerPrice{}}
+	for k, raw := range p.TCGPlayer {
+		switch k {
+		case "unit":
+			_ = json.Unmarshal(raw, &out.Unit)
+		case "updated":
+			_ = json.Unmarshal(raw, &out.Updated)
+		default:
+			if len(raw) == 0 || raw[0] != '{' {
+				continue
+			}
+			var v TCGPlayerPrice
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return nil, fmt.Errorf("pricing.tcgplayer.%s: %w", k, err)
+			}
+			out.Variants[k] = v
+		}
+	}
+	return out, nil
+}
+
+// Serie 는 시리즈 상세(/{lang}/series/{id})이다.
+type Serie struct {
+	ID   string     `json:"id"`
+	Name string     `json:"name"`
+	Sets []SetBrief `json:"sets"`
 }
 
 // DexIDs 는 도감 번호를 정수로 돌려준다. 소수는 정수 부분만 쓰고(384.1 → 384), 0 이하는 버리며,

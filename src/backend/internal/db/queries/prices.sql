@@ -62,3 +62,40 @@ WHERE base_currency = @base_currency AND quote_currency = @quote_currency
   AND provider = @provider AND rate_date <= @on_date
 ORDER BY rate_date DESC
 LIMIT 1;
+
+-- name: ListExternalIDLinks :many
+-- 소스의 외부 ID 전체와 연결된 변형의 세트 (#6 TCGCSV: 저장된 연결 재사용, 그룹 ↔ 세트 대응).
+SELECT e.external_id, e.external_sub_id, e.card_variant_id, s.language, s.tcgdex_id AS set_tcgdex_id
+FROM external_ids e
+JOIN card_variants v ON v.id = e.card_variant_id
+JOIN cards c ON c.id = v.card_id
+JOIN sets s ON s.id = c.set_id
+WHERE e.source_id = @source_id;
+
+-- name: ListSetCardVariants :many
+-- 세트의 카드와 변형 (#6 TCGCSV 번호 대조).
+SELECT c.id AS card_id, c.local_id, v.id AS card_variant_id, v.variant
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+JOIN card_variants v ON v.card_id = c.id
+WHERE s.language = @language AND s.tcgdex_id = @set_tcgdex_id
+ORDER BY c.id, v.id;
+
+-- name: ListSetTcgdexIDs :many
+-- 언어의 세트 ID 전체 (#6 TCGCSV 그룹 코드 대응).
+SELECT tcgdex_id FROM sets WHERE language = @language ORDER BY tcgdex_id;
+
+-- name: ListPriceTargetCards :many
+-- 시세 수집 대상 카드와 변형 (#6 TCGdex 카드 상세 순회).
+-- set_tcgdex_ids 가 비어 있으면 모든 세트. exclude_sets 는 "언어:세트ID" 목록이다 (TCG Pocket 제외, Q6).
+SELECT c.language, c.tcgdex_id, s.tcgdex_id AS set_tcgdex_id,
+       array_agg(v.variant ORDER BY v.id)::text[] AS variants,
+       array_agg(v.id ORDER BY v.id)::bigint[] AS variant_ids
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+JOIN card_variants v ON v.card_id = c.id
+WHERE c.language = ANY(@languages::text[])
+  AND (cardinality(@set_tcgdex_ids::text[]) = 0 OR s.tcgdex_id = ANY(@set_tcgdex_ids::text[]))
+  AND NOT ((c.language || ':' || s.tcgdex_id) = ANY(@exclude_sets::text[]))
+GROUP BY c.id, s.tcgdex_id
+ORDER BY c.language, s.tcgdex_id, c.id;
