@@ -236,6 +236,30 @@
 - 저장: TCGCSV는 `last-updated` UTC 날짜, Cardmarket은 `updated` UTC 날짜를 `price_date`로 한다.
 - 환율: 하루 2회 호출, 응답 `date`로 저장.
 
+## 구현 결과
+
+### 패키지 구성 (2단계)
+
+| 패키지 | 역할 |
+|--------|------|
+| `internal/httpx` | 외부 소스 공용 HTTP 클라이언트. 요청 간 최소 간격(클라이언트 전체 공유), 전용 User-Agent, 네트워크 오류·429·5xx만 지수 백오프 재시도(기본 3회, 첫 대기 2초, `Retry-After` 초 단위 존중, 최대 60초), 404는 `ErrNotFound`, 그 밖의 4xx는 본문 앞 200바이트를 담아 바로 실패. `GetJSON`, `GetText` |
+| `internal/fx` | Frankfurter v2 클라이언트. `Rates(ctx, base, quotes, date)`. 요청 간 1초. 환율이 양수가 아니면 오류 |
+| `internal/prices` | `Source` 인터페이스, `Runner`(작업 동시 실행), `FX`(환율 작업) |
+
+- `internal/tcgdex`는 #5 코드 그대로 두었다. 같은 재시도 로직이 `httpx`와 중복되지만, 상시 수집기가 쓰는 코드라 이번 타스크에서 옮기지 않는다.
+
+### 작업 실행 (`prices.Runner`)
+
+- `Source`는 `Code()`와 `Collect(ctx, Options) (Result, error)` 두 메서드이다. 가격 소스의 `Code`는 `price_sources.code`(`tcgcsv`, `tcgdex_cardmarket`), 환율 작업은 `fx`이다.
+- `Runner.Run`은 `Options.Sources`에 해당하는 작업을 모두 고루틴으로 동시에 실행하고 기다린다. 작업 하나의 오류·패닉은 그 작업의 오류로만 남고, 다른 작업은 끝까지 실행된다. 반환 오류는 실패한 작업 오류를 합친 것(`errors.Join`)이다.
+- 작업마다 시작·종료 로그를 남긴다. 종료 로그에는 `fetched`, `linked`, `saved`, `skipped`, `failed`, `duration`과 실패 항목 앞 20개가 들어간다 (Q3: 로그로만 기록).
+
+### 환율 작업 (`prices.FX`)
+
+- `USD→KRW`, `EUR→KRW`를 최신 값으로 1회씩 조회해 `UpsertFxRate`(provider `frankfurter`)로 저장한다. `rate_date`는 응답의 `date`이다.
+- 빈 응답이면 저장하지 않고 경고만 남긴다(`skipped`). 한 쌍이 실패해도 다른 쌍은 저장한다.
+- 개발 DB 실행 (2026-11-19 18:04 KST): `USD/KRW 2026-11-19 1,332.93`, `EUR/KRW 2026-11-19 1,464.90`, 1.4초.
+
 ## 참고 자료
 
 - TCGCSV: https://tcgcsv.com/ , https://tcgcsv.com/docs , https://tcgcsv.com/last-updated.txt
