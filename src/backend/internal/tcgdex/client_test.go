@@ -310,6 +310,12 @@ func TestTCGPlayerPricing(t *testing.T) {
 		t.Fatalf("normal=%+v reverse=%+v", n, r)
 	}
 
+	cm, err := card.Cardmarket()
+	if err != nil || cm == nil || cm.Unit != "EUR" || cm.Updated != "2026-11-23T03:12:41.577Z" ||
+		*cm.Trend != 0.16 || *cm.TrendHolo != 0.37 || *cm.IDProduct != 733596 {
+		t.Fatalf("cardmarket = %+v, %v", cm, err)
+	}
+
 	// pricing 이 null 인 카드
 	card, err = c.GetCard(context.Background(), "ja", "SV4K-001")
 	if err != nil {
@@ -317,6 +323,9 @@ func TestTCGPlayerPricing(t *testing.T) {
 	}
 	if p, err := card.TCGPlayer(); p != nil || err != nil {
 		t.Fatalf("ja pricing = %+v, %v", p, err)
+	}
+	if cm, err := card.Cardmarket(); cm != nil || err != nil {
+		t.Fatalf("ja cardmarket = %+v, %v", cm, err)
 	}
 	// tcgplayer 가 null 이거나 형식이 다른 경우
 	for raw, wantErr := range map[string]bool{

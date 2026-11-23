@@ -2,7 +2,7 @@
 
 > **작성일**: 2026-11-19
 > **관련 타스크**: [#6](https://github.com/Chocobone/PokeCardPrice/issues/6) 시세 수집 스케줄러 (해외 소스)
-> **상태**: 1단계(사전 확인과 측정) 승인, Q1·Q2 확정안과 Q5~Q7 제안대로 결정 (2026-11-19). 2단계 승인(2026-11-23), 3단계(TCGCSV 어댑터) 구현 결과 추가. 4~5단계에서 구현 결과와 실측값을 추가한다.
+> **상태**: 1단계(사전 확인과 측정) 승인, Q1·Q2 확정안과 Q5~Q7 제안대로 결정 (2026-11-19). 2단계 승인(2026-11-23), 3단계(TCGCSV 어댑터) 승인(Q8·Q9 제안대로), 4단계(Cardmarket 어댑터) 승인(2026-11-23). 5단계에서 전체 실측값을 추가한다.
 
 ---
 
@@ -244,7 +244,7 @@
 |--------|------|
 | `internal/httpx` | 외부 소스 공용 HTTP 클라이언트. 요청 간 최소 간격(클라이언트 전체 공유), 전용 User-Agent, 네트워크 오류·429·5xx만 지수 백오프 재시도(기본 3회, 첫 대기 2초, `Retry-After` 초 단위 존중, 최대 60초), 404는 `ErrNotFound`, 그 밖의 4xx는 본문 앞 200바이트를 담아 바로 실패. `GetJSON`, `GetText` |
 | `internal/fx` | Frankfurter v2 클라이언트. `Rates(ctx, base, quotes, date)`. 요청 간 1초. 환율이 양수가 아니면 오류 |
-| `internal/prices` | `Source` 인터페이스, `Runner`(작업 동시 실행), `FX`(환율 작업). 3단계: `TCGCSV`(TCGplayer 가격), `TCGdex`(카드 상세 순회, 방법 A), 연결 규칙(`link.go`) |
+| `internal/prices` | `Source` 인터페이스, `Runner`(작업 동시 실행), `FX`(환율 작업). 3단계: `TCGCSV`(TCGplayer 가격), `TCGdex`(카드 상세 순회, 방법 A), 연결 규칙(`link.go`). 4단계: 같은 순회에서 Cardmarket 가격 저장, 배분 규칙(`cardmarket.go`) |
 | `internal/tcgcsv` | TCGCSV 클라이언트 (3단계). `LastUpdated`, `Groups`, `Products`, `Prices`. 요청 간 120 ms, `httpx` 재시도. 응답 `success`가 거짓이면 오류 |
 
 - `internal/tcgdex`는 #5 코드 그대로 두었다. 같은 재시도 로직이 `httpx`와 중복되지만, 상시 수집기가 쓰는 코드라 이번 타스크에서 옮기지 않는다.
@@ -317,6 +317,38 @@
 2. **`(Full Art)`처럼 이름에 괄호가 있는 단독 상품**은 Q5 조건(괄호 없는 기본 상품)에 걸려 변형을 추가하지 않는다. `sm1`에서 26행 (`Lurantis GX (Full Art)` 등, TCGdex는 `normal`만 있음).
 3. **Q5로 홀로 변형을 추가한 카드에는 가격 없는 `normal`이 남는다.** `sm1` 홀로 레어 27장은 TCGdex가 `normal`만 두었으나 TCGplayer에는 `Holofoil`만 있다. 추가한 `holofoil`에 가격이 붙고 `normal`은 비어 있다. 4단계 Cardmarket 기본 필드 규칙(`normal` 우선)을 그대로 쓰면 이 카드는 TCGplayer 가격(`holofoil`)과 Cardmarket 가격(`normal`)이 다른 변형에 붙는다. → Q9 결정(2026-11-23): TCGplayer 가격이 `holofoil`에만 있으면 Cardmarket 기본 필드도 `holofoil`에 넣는다 (4단계).
    - 2번은 Q8 결정(2026-11-23)으로 현행 유지, 5단계 전체 수집 건수를 보고 다시 판단한다.
+
+### Cardmarket 수집 (4단계)
+
+TCGdex 카드 상세 순회 작업(`tcgdex_cardmarket`)이 같은 응답 하나로 Cardmarket 가격 저장과 TCGplayer 상품 ID 연결(3단계)을 함께 한다. 대상은 `en`·`ja` 전체 카드(TCG Pocket 제외)이고 매일 실행한다 (Q2).
+
+**배분 규칙 (Q7·Q9 구현).**
+
+| 필드 | 넣을 변형 |
+|------|-----------|
+| 기본 (`low`, `avg`, `trend`, `avg1`, `avg7`, `avg30`) | `normal` → `holofoil` → `unlimited_holofoil` → `unlimited` 중 먼저 있는 것. 초판(`first_edition`, `first_edition_holofoil`)에는 넣지 않는다. **Q9**: `normal`·`holofoil`이 모두 있고 TCGplayer 연결(`external_ids`)이 `holofoil`에만 있으면 `holofoil` |
+| `-holo` | `reverse_holofoil`. 없으면 버린다. 값이 없으면(대부분의 홀로 카드) 후보로 세지 않는다 |
+
+- 대표값은 `trend`, 없으면 `avg`이다. `0` 이하는 거래가 없는 것으로 보고 모든 필드를 NULL로 둔다. 대표값이 없으면 그 변형의 행을 만들지 않는다.
+- `price_date`는 `updated`의 UTC 날짜, `source_updated_at`은 `updated`이다. `unit`이 `EUR`가 아니거나 `updated`를 해석할 수 없으면 그 카드는 저장하지 않는다. 시작할 때 `price_sources.currency`가 `EUR`인지도 확인한다.
+- Cardmarket 상품 ID(`idProduct`)는 같은 카드의 변형들이 공유하므로 `external_ids`에 저장하지 않는다 (1단계 결론).
+- 저장은 500행 단위 트랜잭션이다. 저장에 실패하면 그 묶음의 카드를 실패로 두고, 조회 실패 카드와 함께 끝에 한 번 더 받는다.
+- 저장하지 않은 이유는 요약 로그(`cardmarket skipped`)에 남긴다: `no_pricing`, `unit_not_eur`, `updated_invalid`, `no_value`, `variant_missing`.
+- Q9는 TCGplayer 연결이 이미 있어야 적용된다. 빈 DB 첫 실행에서는 Q5 변형(`holofoil`)이 같은 실행의 TCGCSV 3번 단계에서 만들어지므로, 그런 카드의 첫날 Cardmarket 가격은 `normal`에 붙고 다음 날부터 `holofoil`에 붙는다.
+
+**개발 DB 표본 수집 (2026-11-23 14:07 KST).** 대상: 3단계 5세트(`sv03.5`, `svp`, `SV2a`, `SV4K`, `sm1`) + 초판 세트 `base1` + 가격 없는 `ja` `PMCG2`.
+
+| 항목 | 값 |
+|------|----|
+| 카드 | 1,060장, 4분 27초 (초당 약 4장, 1단계 계산과 같음), 실패 카드 0 |
+| 저장 | 1,444행, 모두 `trend` 기준, `price_date` 2026-11-23 |
+| 건너뜀 | 가격 없음 48장 (`PMCG2` 전체), 변형 없음 145 (리버스가 없는 카드의 `-holo` 값 등) |
+| TCGplayer 연결 (같은 순회) | 새로 연결·변경 101, 그대로 830, 건너뜀 28 |
+| `base1` | `unlimited` 86 / 86, `unlimited_holofoil` 16 / 16, 초판 0 (규칙대로) |
+| `sm1` Q9 | `normal`+`holofoil` 카드 27장 모두 Cardmarket이 `holofoil`에 붙음, `normal` 0 |
+| `ja` `SV2a` 리버스 | 153 / 153 (TCGCSV는 패턴 상품이라 연결 안 됨, Cardmarket `-holo`로만 가격이 있음) |
+| 원본 대조 | `sv03.5-001`, `sm1-12`, `base1-4`, `SV2a-001`, `svp-173`의 모든 필드가 API 응답과 같음 |
+| 재실행 (`sv03.5`) | 207장 53초, `price_history`·`external_ids`·`card_variants` 행 수 불변 |
 
 ## 참고 자료
 

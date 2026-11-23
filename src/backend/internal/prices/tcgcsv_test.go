@@ -206,11 +206,16 @@ type priceRow struct {
 	Variant, Date, Price, Basis string
 }
 
-func priceRows(t *testing.T, pool *pgxpool.Pool) map[string]priceRow {
+// priceRows 는 소스 source 의 가격 행이다 ("카드ID/변형" → 행).
+func priceRows(t *testing.T, pool *pgxpool.Pool, source string) map[string]priceRow {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `
 		SELECT c.tcgdex_id || '/' || v.variant, p.price_date::text, p.price::text, p.price_basis
-		FROM price_history p JOIN card_variants v ON v.id = p.card_variant_id JOIN cards c ON c.id = v.card_id`)
+		FROM price_history p
+		JOIN price_sources s ON s.id = p.source_id
+		JOIN card_variants v ON v.id = p.card_variant_id
+		JOIN cards c ON c.id = v.card_id
+		WHERE s.code = $1`, source)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +264,7 @@ var wantTCGCSVPrices = map[string]priceRow{
 
 func checkTCGCSVPrices(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	got := priceRows(t, pool)
+	got := priceRows(t, pool, TCGCSVCode)
 	if len(got) != len(wantTCGCSVPrices) {
 		t.Errorf("price_history = %+v", got)
 	}
@@ -320,7 +325,7 @@ func TestTCGCSVGroupFailureIsIsolated(t *testing.T) {
 		t.Fatalf("res=%+v err=%v", res, err)
 	}
 	// 다른 그룹(ja SV4K)은 저장된다
-	got := priceRows(t, pool)
+	got := priceRows(t, pool, TCGCSVCode)
 	if len(got) != 1 || got["SV4K-001/normal"].Price != "0.50" {
 		t.Fatalf("price_history = %+v", got)
 	}
@@ -388,8 +393,18 @@ func TestRunnerTCGdexThenTCGCSV(t *testing.T) {
 	}
 	csvRes, tdRes := results[0], results[1]
 	// TCGdex: 5장 중 1장 실패(끝에 다시 시도), 상품 ID 2개 연결, TCG Pocket(A1) 카드는 부르지 않음
-	if tdRes.Fetched != 4 || tdRes.Linked != 2 || !slices.Equal(tdRes.Failed, []string{"en/sv03.5-002"}) {
+	// Cardmarket: sv03.5-001 기본 → normal, -holo → reverse_holofoil. 나머지 3장은 가격 없음
+	if tdRes.Fetched != 4 || tdRes.Linked != 2 || tdRes.Saved != 2 || tdRes.Skipped != 3 ||
+		!slices.Equal(tdRes.Failed, []string{"en/sv03.5-002"}) {
 		t.Fatalf("tcgdex = %+v", tdRes)
+	}
+	cm := priceRows(t, pool, CardmarketCode)
+	wantCM := map[string]priceRow{
+		"sv03.5-001/normal":           {"sv03.5-001/normal", "2026-11-23", "0.16", "trend"},
+		"sv03.5-001/reverse_holofoil": {"sv03.5-001/reverse_holofoil", "2026-11-23", "0.37", "trend"},
+	}
+	if len(cm) != 2 || cm["sv03.5-001/normal"] != wantCM["sv03.5-001/normal"] || cm["sv03.5-001/reverse_holofoil"] != wantCM["sv03.5-001/reverse_holofoil"] {
+		t.Fatalf("cardmarket = %+v", cm)
 	}
 	ft.mu.Lock()
 	for _, p := range ft.paths {

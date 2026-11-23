@@ -135,6 +135,41 @@ func (c *Card) TCGPlayer() (*TCGPlayerPricing, error) {
 	return out, nil
 }
 
+// CardmarketPricing 은 카드 상세 pricing.cardmarket 이다 (EUR).
+// 기본 필드와 -holo 필드가 있다. -holo 는 Cardmarket 상품 안의 리버스 홀로 속성 가격이다 (price_collector.md 4절).
+// 거래가 없는 필드는 0 으로 오는 경우가 있다.
+type CardmarketPricing struct {
+	Updated   string   `json:"updated"`
+	Unit      string   `json:"unit"`
+	IDProduct *int64   `json:"idProduct"`
+	Avg       *float64 `json:"avg"`
+	Low       *float64 `json:"low"`
+	Trend     *float64 `json:"trend"`
+	Avg1      *float64 `json:"avg1"`
+	Avg7      *float64 `json:"avg7"`
+	Avg30     *float64 `json:"avg30"`
+	AvgHolo   *float64 `json:"avg-holo"`
+	LowHolo   *float64 `json:"low-holo"`
+	TrendHolo *float64 `json:"trend-holo"`
+	Avg1Holo  *float64 `json:"avg1-holo"`
+	Avg7Holo  *float64 `json:"avg7-holo"`
+	Avg30Holo *float64 `json:"avg30-holo"`
+}
+
+// Cardmarket 은 pricing.cardmarket 을 해석한다. 값이 없으면 nil 이다.
+func (c *Card) Cardmarket() (*CardmarketPricing, error) {
+	if len(c.Pricing) == 0 || string(c.Pricing) == "null" {
+		return nil, nil
+	}
+	var p struct {
+		Cardmarket *CardmarketPricing `json:"cardmarket"`
+	}
+	if err := json.Unmarshal(c.Pricing, &p); err != nil {
+		return nil, fmt.Errorf("pricing.cardmarket: %w", err)
+	}
+	return p.Cardmarket, nil
+}
+
 // Serie 는 시리즈 상세(/{lang}/series/{id})이다.
 type Serie struct {
 	ID   string     `json:"id"`
