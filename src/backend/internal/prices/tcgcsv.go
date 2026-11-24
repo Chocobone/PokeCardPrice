@@ -159,6 +159,64 @@ type tcgcsvRun struct {
 	skips     map[string]int
 	used      map[string]bool // 이번 실행에 저장한 변형 (assignment.target)
 	created   int             // Q5 로 추가한 변형 수
+	unlinked  int             // 상품 번호가 맞지 않아 지운 연결 수
+}
+
+// linkTarget 은 저장된 외부 ID 가 가리키는 변형과 그 카드의 정규화한 번호이다.
+type linkTarget struct {
+	VariantID int64
+	Card      string // 언어/카드 ID (로그용)
+	Number    string
+}
+
+func linkTargets(rows []dbq.ListExternalIDLinksRow) map[linkKey]linkTarget {
+	m := make(map[linkKey]linkTarget, len(rows))
+	for _, r := range rows {
+		m[linkKey{r.ExternalID, r.ExternalSubID}] = linkTarget{
+			VariantID: r.CardVariantID, Card: r.Language + "/" + r.CardTcgdexID, Number: normalizeNumber(r.LocalID),
+		}
+	}
+	return m
+}
+
+// unlink 는 상품 번호와 카드 번호가 다른 연결을 지우고, 그 변형에 이 소스로 저장된 가격도 지운다.
+// TCGdex 가 다른 카드의 상품 ID 를 준 경우이다 (bw11-RC1 → bw11-6 의 상품). 그 가격은 다른 카드의 것이다.
+// 이번 실행에 이미 그 변형에 저장한 값(다른 상품의 오늘 가격)은 남긴다.
+// 지우지 못하면 경고하고 그 행을 건너뛴다 (false).
+func (r *tcgcsvRun) unlink(ctx context.Context, g *tcgcsvGroup, p tcgcsv.Price, lt linkTarget) bool {
+	prod := g.Products[p.ProductID]
+	before := r.priceDate.AddDate(0, 0, 1)
+	if r.used["v"+strconv.FormatInt(lt.VariantID, 10)] {
+		before = r.priceDate
+	}
+	var deleted int64
+	err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
+		q := r.q.WithTx(tx)
+		if _, err := q.DeleteExternalIDLink(ctx, dbq.DeleteExternalIDLinkParams{
+			SourceID: r.srcID, ExternalID: strconv.Itoa(p.ProductID), ExternalSubID: p.SubTypeName, CardVariantID: lt.VariantID,
+		}); err != nil {
+			return fmt.Errorf("external_ids 삭제: %w", err)
+		}
+		n, err := q.DeleteVariantSourcePrices(ctx, dbq.DeleteVariantSourcePricesParams{
+			CardVariantID: lt.VariantID, SourceID: r.srcID, BeforeDate: before,
+		})
+		deleted = n
+		if err != nil {
+			return fmt.Errorf("price_history 삭제: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		slog.Warn("tcgcsv unlink failed", "group", g.key(), "product", p.ProductID, "err", err)
+		if !slices.Contains(r.res.Failed, g.key()) {
+			r.res.Failed = append(r.res.Failed, g.key())
+		}
+		return false
+	}
+	r.unlinked++
+	slog.Info("tcgcsv link number mismatch", "group", g.key(), "product", p.ProductID, "sub_type", p.SubTypeName,
+		"name", prod.Name, "number", prod.Number, "card", lt.Card, "card_number", lt.Number, "prices_deleted", deleted)
+	return true
 }
 
 // Collect 는 TCGCSV 가격을 받아 연결·저장한다. 그룹 단위로 실패를 가둔다.
@@ -193,10 +251,11 @@ func (s *TCGCSV) Collect(ctx context.Context, opt Options) (Result, error) {
 	}
 
 	// 1. 저장된 연결로 저장
-	links, err := loadLinks(ctx, q, src.ID)
+	rows, err := q.ListExternalIDLinks(ctx, src.ID)
 	if err != nil {
-		return res, err
+		return res, fmt.Errorf("external_ids: %w", err)
 	}
+	links := linkTargets(rows)
 	var as []assignment
 	for _, g := range groups {
 		for i, p := range g.Prices {
@@ -212,9 +271,15 @@ func (s *TCGCSV) Collect(ctx context.Context, opt Options) (Result, error) {
 				run.skip(skipSpecial)
 				continue
 			}
-			if v, ok := links[linkKey{strconv.Itoa(p.ProductID), p.SubTypeName}]; ok {
-				as = append(as, assignment{group: g, price: p, VariantID: v})
-				continue
+			if lt, ok := links[linkKey{strconv.Itoa(p.ProductID), p.SubTypeName}]; ok {
+				if lt.Number == prod.Number {
+					as = append(as, assignment{group: g, price: p, VariantID: lt.VariantID})
+					continue
+				}
+				// 번호가 다른 카드를 가리키는 연결. 지우고 3단계에서 번호 대조로 다시 연결한다.
+				if !run.unlink(ctx, g, p, lt) {
+					continue
+				}
 			}
 			g.pending = append(g.pending, i)
 		}
@@ -251,7 +316,7 @@ func (s *TCGCSV) Collect(ctx context.Context, opt Options) (Result, error) {
 	for _, r := range reasons {
 		attrs = append(attrs, r, run.skips[r])
 	}
-	attrs = append(attrs, "variants_created", run.created)
+	attrs = append(attrs, "variants_created", run.created, "links_removed", run.unlinked)
 	slog.Info("tcgcsv skipped rows", attrs...)
 	if len(res.Failed) > 0 {
 		return res, fmt.Errorf("그룹 %d개 실패", len(res.Failed))
@@ -349,10 +414,9 @@ func (r *tcgcsvRun) linkPending(ctx context.Context, groups []*tcgcsvGroup) ([]a
 	if err != nil {
 		return nil, fmt.Errorf("external_ids: %w", err)
 	}
-	links := make(map[linkKey]int64, len(rows))
+	links := linkTargets(rows)
 	productSet := make(map[string]string, len(rows)) // productId → "언어:세트ID"
 	for _, row := range rows {
-		links[linkKey{row.ExternalID, row.ExternalSubID}] = row.CardVariantID
 		productSet[row.ExternalID] = row.Language + ":" + row.SetTcgdexID
 	}
 	groupSets, err := r.mapGroupSets(ctx, groups, productSet)
@@ -381,15 +445,21 @@ func (r *tcgcsvRun) linkPending(ctx context.Context, groups []*tcgcsvGroup) ([]a
 
 		for _, i := range g.pending {
 			p := g.Prices[i]
-			if v, ok := links[linkKey{strconv.Itoa(p.ProductID), p.SubTypeName}]; ok {
-				as = append(as, assignment{group: g, price: p, VariantID: v})
-				continue
+			prod := g.Products[p.ProductID]
+			if lt, ok := links[linkKey{strconv.Itoa(p.ProductID), p.SubTypeName}]; ok {
+				if lt.Number == prod.Number {
+					as = append(as, assignment{group: g, price: p, VariantID: lt.VariantID})
+					continue
+				}
+				// 이번 실행의 TCGdex 작업이 새로 준 연결도 번호가 다르면 지우고 번호 대조로 넘어간다.
+				if !r.unlink(ctx, g, p, lt) {
+					continue
+				}
 			}
 			if set == "" {
 				r.skip(skipNoSet)
 				continue
 			}
-			prod := g.Products[p.ProductID]
 			if g.baseProduct(prod.Number) != p.ProductID {
 				r.skip(skipSpecial)
 				continue

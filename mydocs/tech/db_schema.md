@@ -568,6 +568,7 @@ CREATE INDEX cards_dex_ids_idx ON cards USING gin (dex_ids);
 
 - #6: TCGdex Cardmarket 가격은 카드 단건 조회에만 있어, 하루 수집에 카드 수만큼(`en`·`ja` 약 3만 6천 회) 요청이 필요하다. 동시성 2, 요청 간격을 두면 수 시간이 걸릴 수 있다.
 - #6: Cardmarket의 `-holo` 필드는 카드 변형이 `normal` + `reverse_holofoil`이면 리버스 홀로, `holofoil`만 있으면 홀로 변형에 넣어야 한다. 연결 규칙은 #6에서 표본으로 확인한다.
+  - → #6 결과 (2026-11-23): `-holo`는 리버스 홀로에만 넣고(없으면 버림), 홀로만 있는 카드는 기본 필드를 홀로에 넣는다. `price_collector.md` 4절·"Cardmarket 수집 (4단계)".
 - #5: 한글판 카드 연결(`card_links`)이 한글판 → 일본판 방향인지는 DB 제약으로 막지 않는다. 수집기가 언어를 확인한다.
 
 ### 10. Go 타입과 기본 쿼리 (4단계)
@@ -612,7 +613,7 @@ CREATE INDEX cards_dex_ids_idx ON cards USING gin (dex_ids);
 | 파일 | 쿼리 | 쓰는 타스크 |
 |------|------|-------------|
 | `catalog.sql` | `UpsertSet`, `UpsertCard`, `UpsertCardVariant`, `GetCard`, `ListCardVariants`. #5 추가: `ListCardTcgdexIDsBySet`, `UpdateCardBrief`(요약 필드만 갱신), `UpsertPokemonSpecies`, `UpsertAutoCardLinks`, `DeleteStaleAutoCardLinks`, `ListUnlinkedKoCards`, `SetHasKoEdition`, `GetKoLinkStats`, `ListCardsByKoSpeciesName` (근거: `catalog_collector.md`) | #5, #8 |
-| `prices.sql` | `GetPriceSourceByCode`, `UpsertExternalID`, `FindVariantByExternalID`, `UpsertPriceHistory`(`:batchexec`, pgx 배치), `ListPriceHistory`, `UpsertFxRate`, `GetFxRateOnOrBefore` | #6, #7, #8 |
+| `prices.sql` | `GetPriceSourceByCode`, `UpsertExternalID`, `FindVariantByExternalID`, `UpsertPriceHistory`(`:batchexec`, pgx 배치), `ListPriceHistory`, `UpsertFxRate`, `GetFxRateOnOrBefore`. #6 추가: `ListExternalIDLinks`, `ListSetCardVariants`, `ListSetTcgdexIDs`, `ListPriceTargetCards`, `ListPriceHistoryKRW`(직전 환율 결합) | #6, #7, #8 |
 | `users.sql` | `CreateUser`, `GetUserByEmail`, `UpsertCollectionItem`, `ListCollectionItems`, `CreateUserTrade` | #9, #10 |
 
 - 저장 쿼리는 모두 `ON CONFLICT ... DO UPDATE`라 수집기를 다시 실행해도 행이 늘지 않는다.

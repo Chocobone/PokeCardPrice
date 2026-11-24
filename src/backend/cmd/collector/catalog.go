@@ -61,11 +61,11 @@ func isFullRefreshDay(now time.Time) bool { return now.Day() == 1 }
 
 // collectCatalog 는 카탈로그 수집을 한 번 실행하고 결과를 로그로 남긴다.
 // 일부 세트만 실패하면 WARN 으로 남기고 성공으로 끝낸다 (다음 실행에서 다시 시도된다).
-func collectCatalog(ctx context.Context, pool *pgxpool.Pool, cfg catalogConfig, full bool) error {
+func collectCatalog(ctx context.Context, pool *pgxpool.Pool, td *tcgdex.Client, cfg catalogConfig, full bool) error {
 	opt := cfg.opt
 	opt.Full = full || cfg.forceFull
 	slog.Info("catalog: start", "languages", opt.Languages, "sets", opt.SetIDs, "full", opt.Full)
-	res, err := catalog.New(pool, tcgdex.New()).Run(ctx, opt)
+	res, err := catalog.New(pool, td).Run(ctx, opt)
 	if err != nil {
 		slog.Error("catalog: failed", "result", res, "err", err)
 		return fmt.Errorf("카탈로그 수집: %w", err)

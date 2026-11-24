@@ -12,7 +12,7 @@
 #   restart          수집기 재시작 (소스를 git pull 한 뒤 반영)
 #   once [-d]        수집 작업 1회 실행. 빈 DB 첫 적재는 수 시간 걸린다
 #   full [-d]        전체 갱신으로 1회 실행 (모든 카드 상세 재조회)
-#   status           컨테이너 상태와 DB 카탈로그 행 수
+#   status           컨테이너 상태와 DB 카탈로그·시세 행 수
 #   logs             상시 실행 수집기 로그 보기 (Ctrl+C 로 빠져나옴)
 #
 #   -d               백그라운드로 실행하고 logs/ 에 로그를 남긴다 (SSH 접속이 끊겨도 계속 실행)
@@ -22,6 +22,8 @@
 #   CATALOG_LANGUAGES       수집 언어 (예: en,ja). 비우면 en,ja,ko
 #   CATALOG_SETS            수집 세트 (예: sv03.5,SV5K). 비우면 전체
 #   CATALOG_FULL            true 면 매 실행 전체 갱신
+#   PRICES_SOURCES          시세 작업 (fx,tcgcsv,tcgdex_cardmarket). 비우면 전체, none 이면 끔
+#   PRICES_TCGCSV_GROUPS    TCGCSV 그룹 ID (예: 23237, 개발용)
 #   COLLECTOR_INTERVAL      일정 대신 이 간격으로 반복 (예: 30m, 개발용)
 set -euo pipefail
 
@@ -57,10 +59,10 @@ require_env() {
   [[ -f "$ENV_FILE" ]] || die "Docker/.env 가 없습니다. 먼저 'scripts/collector.sh setup' 을 실행하세요"
 }
 
-# 실행 시 지정한 CATALOG_*·COLLECTOR_INTERVAL 을 컨테이너에 넘긴다 (.env 값보다 우선).
+# 실행 시 지정한 CATALOG_*·PRICES_*·COLLECTOR_INTERVAL 을 컨테이너에 넘긴다 (.env 값보다 우선).
 pass_env_args() {
   local k
-  for k in CATALOG_LANGUAGES CATALOG_SETS CATALOG_FULL COLLECTOR_INTERVAL; do
+  for k in CATALOG_LANGUAGES CATALOG_SETS CATALOG_FULL PRICES_SOURCES PRICES_TCGCSV_GROUPS COLLECTOR_INTERVAL; do
     if [[ -n "${!k:-}" ]]; then printf -- '-e\n%s=%s\n' "$k" "${!k}"; fi
   done
 }
@@ -150,6 +152,10 @@ FROM sets s LEFT JOIN cards c ON c.set_id = s.id GROUP BY 1 ORDER BY 1;
 SELECT (SELECT count(*) FROM card_links) AS links,
        (SELECT count(*) FROM cards WHERE has_ko_edition) AS has_ko_edition,
        (SELECT count(*) FROM pokemon_species) AS species;
+SELECT ps.code AS price_source, max(p.price_date) AS latest_price_date, count(p.*) AS price_rows
+FROM price_sources ps JOIN price_history p ON p.source_id = ps.id GROUP BY 1 ORDER BY 1;
+SELECT base_currency || '/' || quote_currency AS fx_pair, max(rate_date) AS latest_rate_date, count(*) AS rates
+FROM fx_rates GROUP BY 1 ORDER BY 1;
 SQL
   fi
 }
@@ -159,7 +165,7 @@ cmd_logs() {
   compose logs -f --tail 100 collector
 }
 
-usage() { sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,27p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 main() {
   local action="${1:-}"

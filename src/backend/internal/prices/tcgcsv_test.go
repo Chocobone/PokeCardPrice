@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db/dbq"
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/httpx"
@@ -54,6 +55,7 @@ func TestResolveVariant(t *testing.T) {
 func TestNormalizeNumber(t *testing.T) {
 	for in, want := range map[string]string{
 		"001/165": "1", "014": "14", "1/149": "1", "TG01/TG30": "TG01", "swsh001": "SWSH001", "000": "0", " 25 ": "25", "": "",
+		"050A": "50A", "50a": "50A", "074A/147": "74A", "RC01": "RC01",
 	} {
 		if got := normalizeNumber(in); got != want {
 			t.Errorf("%q: got %q, want %q", in, got, want)
@@ -418,4 +420,93 @@ func TestRunnerTCGdexThenTCGCSV(t *testing.T) {
 		t.Fatalf("tcgcsv = %+v", csvRes)
 	}
 	checkTCGCSVPrices(t, pool)
+}
+
+// 번호가 다른 카드를 가리키는 연결(TCGdex 가 다른 카드의 상품 ID 를 준 경우)은 지우고, 그 변형의 가격도 지운 뒤 번호 대조로 다시 연결한다.
+func TestTCGCSVRemovesLinkWithWrongNumber(t *testing.T) {
+	pool := testPool(t)
+	tc := seedCatalog(t, pool)
+	ctx := context.Background()
+	// 502552(001/165) 를 002 카드에 잘못 연결해 두고, 그 연결로 저장됐던 지난 가격을 넣는다.
+	wrong := tc.variants["sv03.5-002/normal"]
+	seedLink(t, pool, "502552", "Normal", wrong)
+	// 맞는 연결 하나 (그룹 23237 ↔ sv03.5 대응의 근거)
+	seedLink(t, pool, "502552", "Reverse Holofoil", tc.variants["sv03.5-001/reverse_holofoil"])
+	q := dbq.New(pool)
+	src, err := q.GetPriceSourceByCode(ctx, TCGCSVCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q.UpsertPriceHistory(ctx, []dbq.UpsertPriceHistoryParams{{
+		CardVariantID: wrong, SourceID: src.ID, PriceDate: time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC),
+		Price: decimal.RequireFromString("0.27"), PriceBasis: "market",
+	}}).Exec(func(_ int, err error) {
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	s := newTCGCSVSource(t, pool, newFakeTCGCSV())
+
+	for i := range 2 {
+		res, err := s.Collect(ctx, Options{})
+		if err != nil || res.Saved != 5 {
+			t.Fatalf("run %d: res=%+v err=%v", i+1, res, err)
+		}
+		// 지난 가격(002/normal, 2026-11-21)은 지워지고, 001 가격은 001 카드에 붙는다.
+		checkTCGCSVPrices(t, pool)
+		v, err := q.FindVariantByExternalID(ctx, dbq.FindVariantByExternalIDParams{SourceID: src.ID, ExternalID: "502552", ExternalSubID: "Normal"})
+		if err != nil || v != tc.variants["sv03.5-001/normal"] {
+			t.Fatalf("run %d: 502552 Normal → %d (err %v), want %d", i+1, v, err, tc.variants["sv03.5-001/normal"])
+		}
+	}
+	// 기존 1 + 방법 B 5 (502552 Normal 다시 연결 포함)
+	if n := countRows(t, pool, "external_ids"); n != 6 {
+		t.Fatalf("external_ids = %d", n)
+	}
+}
+
+// 같은 TCGplayer 상품 ID 를 두 카드가 주면 어느 쪽인지 알 수 없어 저장된 연결을 바꾸지 않는다.
+// 한 카드만 준 상품은 그대로 연결한다.
+func TestTCGdexDuplicateProductIsNotLinked(t *testing.T) {
+	pool := testPool(t)
+	tc := seedCatalog(t, pool)
+	ctx := context.Background()
+	seedLink(t, pool, "502553", "Normal", tc.variants["sv03.5-002/normal"])
+	tp := func(id, product int) string {
+		return `{"id":"sv03.5-00` + strconv.Itoa(id) + `","pricing":{"cardmarket":null,"tcgplayer":{"unit":"USD","normal":{"productId":` + strconv.Itoa(product) + `,"marketPrice":1}}}}`
+	}
+	ft := &fakeTCGdex{cards: map[string]string{
+		// 001 과 002 가 모두 502553 을 준다. 205 는 홀로 상품 하나.
+		"/en/cards/sv03.5-001": tp(1, 502553),
+		"/en/cards/sv03.5-002": tp(2, 502553),
+		"/en/cards/sv03.5-205": `{"id":"sv03.5-205","pricing":{"tcgplayer":{"unit":"USD","holofoil":{"productId":517051,"marketPrice":27}}}}`,
+		"/en/cards/A1-001":     `{"id":"A1-001","pricing":null}`,
+	}}
+	srv := httptest.NewServer(ft)
+	defer srv.Close()
+	src := NewTCGdex(pool, tcgdex.New(tcgdex.WithBaseURL(srv.URL), tcgdex.WithMinInterval(0), tcgdex.WithRetry(0, 0)))
+	if _, err := src.Collect(ctx, Options{Languages: []string{"en"}}); err != nil {
+		t.Fatal(err)
+	}
+	q := dbq.New(pool)
+	csv, err := q.GetPriceSourceByCode(ctx, TCGCSVCode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	find := func(product, sub string) int64 {
+		v, err := q.FindVariantByExternalID(ctx, dbq.FindVariantByExternalIDParams{SourceID: csv.ID, ExternalID: product, ExternalSubID: sub})
+		if err != nil {
+			t.Fatalf("%s %s: %v", product, sub, err)
+		}
+		return v
+	}
+	if v := find("502553", "Normal"); v != tc.variants["sv03.5-002/normal"] {
+		t.Errorf("중복 상품의 저장된 연결이 바뀜: %d", v)
+	}
+	if v := find("517051", "Holofoil"); v != tc.variants["sv03.5-205/holofoil"] {
+		t.Errorf("517051 Holofoil → %d", v)
+	}
+	if n := countRows(t, pool, "external_ids"); n != 2 {
+		t.Fatalf("external_ids = %d", n)
+	}
 }

@@ -267,7 +267,7 @@
 
 | 순서 | TCGCSV 작업 | TCGdex 작업 |
 |------|-------------|-------------|
-| 1 | `last-updated.txt` → `price_date`(UTC 날짜)·`source_updated_at`. 대상 그룹의 상품·가격을 받는다 (실패 그룹은 끝에 한 번 더). 저장된 `external_ids`로 연결되는 행을 그룹 단위 트랜잭션으로 바로 저장 | 대상 카드(`en`·`ja`, TCG Pocket 제외)의 상세를 받아 `pricing.tcgplayer` 키별 `productId`로 `external_ids`를 갱신 (방법 A). 값이 같으면 다시 쓰지 않는다. 동시성 2, 요청 간격은 `tcgdex.Client` 공유. 실패 카드는 끝에 한 번 더 |
+| 1 | `last-updated.txt` → `price_date`(UTC 날짜)·`source_updated_at`. 대상 그룹의 상품·가격을 받는다 (실패 그룹은 끝에 한 번 더). 저장된 `external_ids`로 연결되는 행을 그룹 단위 트랜잭션으로 바로 저장 | 대상 카드(`en`·`ja`, TCG Pocket 제외)의 상세를 받아 `pricing.tcgplayer` 키별 `productId`를 모으고, 모든 카드를 받은 뒤 `external_ids`를 갱신 (방법 A). 값이 같으면 다시 쓰지 않고, 여러 카드가 같은 상품 ID를 주면 바꾸지 않는다 (5단계). 동시성 2, 요청 간격은 `tcgdex.Client` 공유. 실패 카드는 끝에 한 번 더 |
 | 2 | 남은 행이 있으면 TCGdex 작업 종료를 기다린다 | (끝) |
 | 3 | `external_ids`를 다시 읽어 남은 행을 연결하고, 그래도 남으면 그룹 ↔ 세트 + 번호로 연결 (방법 B). 방법 B 연결은 `external_ids`에 저장해 다음 날부터 1번에서 바로 쓴다 | |
 
@@ -280,7 +280,8 @@
 | 항목 | 규칙 |
 |------|------|
 | 그룹 ↔ 세트 | ① 수동 대응표(`manualGroupSets`, 현재 비어 있음) ② 그룹 상품 중 `external_ids`로 연결된 상품의 세트 — 가장 많은 세트가 90% 이상이고 언어가 같을 때 ③ 그룹 이름 앞 코드 = 같은 언어의 TCGdex 세트 ID (대소문자 무시, 하나뿐일 때) |
-| 번호 비교 | `/` 앞만, 대문자, 숫자만이면 앞자리 0 제거 (`001/165` → `1`, `TG01/TG30` → `TG01`) |
+| 번호 비교 | `/` 앞만, 대문자, 숫자로 시작하면 숫자 부분의 앞자리 0 제거 (`001/165` → `1`, `050A` → `50A`, `TG01/TG30` → `TG01`). 접미사 처리는 5단계에서 추가 |
+| **저장된 연결 확인** | 저장된 연결이 가리키는 카드 번호가 상품 번호와 다르면 연결과 그 변형의 이 소스 가격을 지우고 번호 대조로 다시 연결한다 (1번·3번 모두, 5단계) |
 | 기본 상품 | 같은 번호의 상품이 하나면 그것, 여럿이면 이름에 괄호(`(`·`[`)가 없는 하나. 정할 수 없으면 번호 대조를 하지 않는다 |
 | **특별 상품의 저장된 연결** | 같은 번호의 기본 상품이 그룹에 따로 있는 특별 상품은 **저장된 연결(방법 A 포함)이 있어도 쓰지 않는다** (아래 발견 사항) |
 | 변형 대체 | 같은 변형 → 초판 세트 `Normal`→`unlimited`, `Holofoil`→`unlimited_holofoil` → 일본판 단일 변형 (1절 규칙 그대로) |
@@ -288,7 +289,7 @@
 | 모호한 연결 | 여러 가격 행이 한 변형에 연결되면(이번 실행에 이미 저장한 변형 포함) 모두 저장하지 않는다 (`ambiguous`) |
 | 대표값 | `marketPrice`, 없거나 0 이하면 `midPrice`. 둘 다 없으면 가격 행을 만들지 않는다 (연결은 저장) |
 
-- 연결하지 않은 행은 분류별 건수를 요약 로그(`tcgcsv skipped rows`)에 남긴다: `non_card`, `group_unmapped`, `special_product`, `card_not_found`, `variant_missing`, `ambiguous`, `no_price`. 상품별 내용은 디버그 로그.
+- 연결하지 않은 행은 분류별 건수를 요약 로그(`tcgcsv skipped rows`)에 남긴다: `non_card`, `group_unmapped`, `special_product`, `card_not_found`, `variant_missing`, `ambiguous`, `no_price`. 상품별 내용은 디버그 로그. 같은 줄의 `links_removed`는 번호가 맞지 않아 지운 연결 수이다 (상품별로 `tcgcsv link number mismatch`).
 - 같은 날 재수집을 막는 장치(기준일 행이 이미 있으면 건너뛰기)는 두지 않았다. 그룹 일부가 실패한 날을 구분하려면 실행 기록이 필요한데 Q3에서 로그만 남기기로 했다. 정기 실행은 하루 1회이고, 수동 `-once` 반복은 개발용 범위로 한다.
 - 개발용 범위: `Options.TCGCSVGroups`(그룹 ID). `SetIDs`는 그룹 이름 코드가 같은 그룹만 고르므로(일본판 위주), 영어판 그룹은 ID로 지정한다.
 - `tcgdex.Card.Pricing`은 원본 JSON(`json.RawMessage`)으로 받고 `Card.TCGPlayer()`로 따로 해석한다. 가격 필드 형식이 바뀌어도 카탈로그 적재(#5)는 실패하지 않는다.
@@ -349,6 +350,86 @@ TCGdex 카드 상세 순회 작업(`tcgdex_cardmarket`)이 같은 응답 하나�
 | `ja` `SV2a` 리버스 | 153 / 153 (TCGCSV는 패턴 상품이라 연결 안 됨, Cardmarket `-holo`로만 가격이 있음) |
 | 원본 대조 | `sv03.5-001`, `sm1-12`, `base1-4`, `SV2a-001`, `svp-173`의 모든 필드가 API 응답과 같음 |
 | 재실행 (`sv03.5`) | 207장 53초, `price_history`·`external_ids`·`card_variants` 행 수 불변 |
+
+### 전체 수집 실측 (5단계)
+
+개발 DB, 2026-11-24 14:27~17:03 KST (2시간 36분), `-once` 전체 범위. 11-23에 시작한 첫 시도는 16:41부터 DNS 조회 실패(네트워크 끊김)로 카드 726장이 실패한 뒤 17:28에 끊겨 다시 실행했다.
+
+| 작업 | 받은 것 | 저장 | 건너뜀 | 최종 실패 | 소요 시간 |
+|------|---------|------|--------|-----------|-----------|
+| 카탈로그 | 세트 511 (건너뜀 9) | 새 카드 0 | | 0 | 2분 46초 |
+| 환율 (`fx`) | 2쌍 | 2 (기준일 11-24) | 0 | 0 | 1.9초 |
+| TCGCSV | 가격 행 75,143 (그룹 685) | 42,476 (56.5%) | 32,667 | 0 | 2시간 33분 (1번 단계 5분, 나머지는 TCGdex 대기) |
+| Cardmarket | 카드 34,588 | 40,434행 | 12,800 | 0 | 2시간 33분 |
+
+- TCGCSV 건너뜀: `group_unmapped` 17,295, `non_card` 6,869, `special_product` 3,697, `card_not_found` 3,505, `variant_missing` 1,300, `ambiguous` 1. Q5 변형 추가 4,363.
+- TCGCSV 그룹 ↔ 세트: 방법 A 결과 93, 코드 126, 대응 없음 320 (남은 행이 있는 그룹 기준).
+- Cardmarket 건너뜀: `variant_missing` 8,832 (`-holo` 값이 있으나 리버스 변형 없음), `no_pricing` 3,559, `no_value` 409.
+- TCGdex 요청: 카드 상세 34,588 + 재시도 84회 (HTTP 503). 실패 5장은 끝 재시도에서 모두 성공. 초당 약 3.8장으로 1단계 계산(2시간 25분)과 비슷하다.
+- TCGCSV 요청: `last-updated` 1 + 그룹 목록 2 + 상품·가격 1,370.
+- 행 수: `price_history` 34,829 → 117,739, `external_ids` 28,208 → 42,518, `card_variants` 49,083 → 53,446.
+- 네트워크가 끊긴 동안 수집기는 카드마다 재시도 3번(약 7초) 후 실패로 넘기며 계속 진행했다. 실패 카드는 끝에 다시 받으므로 짧은 끊김은 스스로 복구된다.
+
+### TCGdex 상품 ID 중복과 저장된 연결 확인 (5단계)
+
+**발견.** 전체 수집 로그에 `tcgplayer link changed`가 92건 있었다. TCGdex가 **서로 다른 카드에 같은 TCGplayer 상품 ID**를 주어(30개 상품), 나중에 처리한 카드가 연결을 덮어쓰고 있었다. 동시성 2라 실행마다 결과가 달라질 수 있고, 가격이 다른 카드에 붙는다. TCGCSV 원본 대조:
+
+| 상품 | TCGCSV 상품 | TCGdex가 이 ID를 준 카드 | 맞는 카드 |
+|------|-------------|---------------------------|-----------|
+| 89381 | Snivy `6/113` (Legendary Treasures) | `bw11-6`, `bw11-RC1` | `bw11-6` (`RC1`은 89382) |
+| 89079 | Servine `7/113` | `bw11-7`, `bw11-RC2` | `bw11-7` (`RC2`는 89080) |
+| 87775 | Ninetales `3` (Rumble) | `ru1-5` Starmie, `ru1-6` Gyarados | 둘 다 아님 (`ru1-3`) |
+| 84971 | Drowzee `074A` (Aquapolis) | `ecard2-74a`, `ecard2-74b` | `ecard2-74a` |
+
+대상: `bw11` ↔ Radiant Collection, `swsh9` ↔ `swsh9tg`, `cel25` ↔ `cel25cc`, `ecard2` a/b, 트레이너 키트(`tk-*`), `ru1`, `np`.
+
+**처리 (2026-11-24 승인).**
+
+1. TCGdex 작업은 연결 후보를 모아 실행 끝에 저장한다. 한 실행에서 둘 이상의 카드가 같은 (상품, 하위 유형)을 주면 저장된 연결을 바꾸지 않는다 (`duplicate_product`, 상품별 `tcgplayer duplicate product` 로그에 카드 목록).
+2. TCGCSV 작업은 저장된 연결을 쓸 때 연결된 카드 번호와 상품 번호를 비교한다. 다르면 연결과 그 변형의 TCGCSV 가격(이번 실행에 이미 저장한 값은 남김)을 지우고, 번호 대조(방법 B)로 다시 연결한다. 1번 대조만 두면 이미 틀린 연결이 남고, 방법 B로 바로잡은 연결을 다음 날 TCGdex가 다시 덮어쓸 수 있어 함께 두었다.
+3. 번호 정규화가 숫자+문자 번호의 앞자리 0을 떼지 않아(`050A` ≠ `50A`) 확인 단계에서 맞는 연결 2건(`ecard2-50a`, `ecard2-95b`)을 지웠다. 숫자로 시작하는 번호는 숫자 부분의 0을 떼도록 고쳤고, 방법 B에서도 `ecard2` a/b 카드 11행이 새로 연결되었다.
+
+**축소 검증** (영어판 15세트 1,042장 + TCGCSV 그룹 13개: 중복이 나온 세트와 오탐 확인용 `svp`, 2026-11-24).
+
+| 항목 | 결과 |
+|------|------|
+| 1회차 | `duplicate_product` 46, 지운 연결 37 (오탐 2건은 3번으로 수정), `link changed` 0 |
+| 2회차 | 지운 연결 0, `link changed` 0, 행 수 불변 (`price_history` 117,735, `external_ids` 42,512, `card_variants` 53,446) |
+| `ecard2` (정규화 수정 후 2회) | 1회차 11행 새로 연결, 2회차 모두 1번 단계에서 저장, 지운 연결 0 |
+| 최종 연결 | 89381 → `bw11-6`, 89079 → `bw11-7`, 87775 → `ru1-3`, 84971 → `ecard2-74a`, 85813 → `ecard2-50a`, 87591 → `ecard2-95b` |
+| `svp` 오탐 | 0 |
+
+**남은 한계.**
+
+- 번호도 같은 중복(트레이너 키트 `tk-sm-l-19` ↔ `tk-sm-r-19`처럼 한 TCGCSV 그룹에 두 세트가 섞임)은 저장된 연결을 그대로 둔다. 두 세트가 한 그룹이라 그룹 ↔ 세트 대응도 되지 않는다 (`group maps to several sets` 경고). 저장된 연결이 틀렸을 수 있다.
+- 카드 한 장만 틀린 상품 ID를 주면 중복으로 잡히지 않는다. 이 경우 매일 TCGdex가 틀린 연결을 쓰고 TCGCSV가 번호 확인으로 지우는 일이 되풀이되며(`link changed`·`link number mismatch` 로그), 가격은 맞는 카드에 붙는다.
+- 범위를 줄인 개발용 실행에서는 범위 밖 카드와의 중복을 알 수 없다. 번호 확인이 대부분을 걸러 낸다.
+- `Lightning Energy (#3)`(TCGCSV 번호 `2`)처럼 TCGCSV 번호가 이름과 다른 상품은 번호 확인이 연결을 지운다. 원본끼리 맞지 않아 어느 쪽이 맞는지 알 수 없다.
+
+### 원화 환산 조회 (5단계)
+
+`ListPriceHistoryKRW`(`internal/db/queries/prices.sql`): 변형 1개·소스 1개의 기간 추이에 그 날짜의 환율을 붙여 돌려준다. #8이 그대로 쓰거나 바탕으로 삼는다.
+
+- 환율은 `price_date` 이전 가장 가까운 값이다 (주말·공휴일·수집 누락일은 직전 값). `fx_rate_date`로 어느 날 환율인지 함께 준다.
+- 첫 환율보다 이른 날, 소스 통화가 `KRW`인 소스(사용자·관리자 가격)는 `fx_rate_date`·`fx_rate`가 NULL이다. KRW 소스는 `price`를 그대로 쓴다.
+- 원화 값은 호출 측에서 `decimal`로 `price × fx_rate`를 원 단위 반올림한다. SQL에서 계산하면 sqlc가 `pgtype.Numeric`으로 만들어 프로젝트 규칙(`decimal`)과 맞지 않아서 그렇게 했다.
+- 실행 계획 (개발 DB, 환율 2년치 1,496행을 트랜잭션 안에 넣고 확인 후 롤백): 직전 날짜는 `fx_rates_pkey` 역순 Index Only Scan(`LIMIT 1`), 값은 같은 키 4열 전체로 Index Scan. 가격 행마다 인덱스 두 번이라 환율 행 수와 무관하다.
+  - 처음에는 `LEFT JOIN fx_rates ... AND rate_date = (서브쿼리)` 형태였으나, 값 조회가 날짜 조건 없이 통화의 모든 환율 행을 훑어 `LATERAL`로 날짜를 먼저 구하게 고쳤다. `LEFT JOIN LATERAL`의 열은 sqlc가 NULL 불가로 만들어 값은 테이블 `LEFT JOIN`으로 가져온다.
+
+### 수집기 연결과 운영 (5단계)
+
+- `collect-daily`(05:30 KST)는 카탈로그 → 시세 순으로 실행한다. 카탈로그가 실패해도 시세는 이미 적재된 카드로 수집하고, 두 오류를 합쳐 돌려준다.
+- 카탈로그와 시세가 TCGdex 클라이언트 하나를 같이 써서 요청 간격(250 ms)을 나눠 쓴다. 두 작업은 차례로 돌아 동시에 부르지 않는다.
+- 시세 작업 셋(`fx`, `tcgcsv`, `tcgdex_cardmarket`)은 동시에 돈다. `tcgcsv`는 남은 행을 처리하기 전에 `tcgdex_cardmarket`이 끝나기를 기다린다.
+
+| 환경 변수 (개발용) | 의미 |
+|--------------------|------|
+| `PRICES_SOURCES` | 실행할 작업 (`fx`, `tcgcsv`, `tcgdex_cardmarket`, 쉼표 구분). 비우면 전체, `none`이면 시세 수집을 하지 않는다 |
+| `PRICES_TCGCSV_GROUPS` | TCGCSV 그룹 ID. 영어판 그룹은 이름 코드가 세트 ID와 달라 따로 지정한다 |
+| `CATALOG_LANGUAGES`, `CATALOG_SETS` | 카탈로그와 같은 언어·세트 범위를 시세에도 쓴다 (`ko`는 시세 대상이 아니라 무시된다) |
+
+- 별도 장비 실행: `scripts/collector.sh`가 `PRICES_*`를 넘기고, `status`에 소스별 최근 기준일·행 수와 환율을 보여 준다 (`mydocs/manual/collector_remote.md`).
+- 로그: 작업마다 `price source start`·`price source done`(`fetched`, `linked`, `saved`, `skipped`, `failed`, `duration`). 연결하지 않은 이유는 `tcgcsv skipped rows`, `cardmarket skipped`, 그룹 ↔ 세트 대응은 `tcgcsv group set mapping`.
 
 ## 참고 자료
 

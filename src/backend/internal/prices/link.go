@@ -79,13 +79,17 @@ func resolveVariant(language string, variants []cardVariant, subTypeName string)
 func normalizeNumber(s string) string {
 	s, _, _ = strings.Cut(strings.TrimSpace(s), "/")
 	s = strings.ToUpper(strings.TrimSpace(s))
-	if s != "" && strings.Trim(s, "0123456789") == "" {
-		s = strings.TrimLeft(s, "0")
-		if s == "" {
-			s = "0"
-		}
+	// 숫자로 시작하면(뒤에 문자 접미사가 붙어도: Aquapolis 050A ↔ TCGdex 50a) 숫자 부분의 앞자리 0 을 뗀다.
+	// 문자로 시작하는 번호(TG01, SWSH001)는 그대로 둔다.
+	digits := len(s) - len(strings.TrimLeft(s, "0123456789"))
+	if digits == 0 {
+		return s
 	}
-	return s
+	num := strings.TrimLeft(s[:digits], "0")
+	if num == "" {
+		num = "0"
+	}
+	return num + s[digits:]
 }
 
 // isSpecialProduct 는 이름에 괄호가 있는 상품이다 (Poke Ball Pattern, Metal Card, Pokemon Center Exclusive 등).

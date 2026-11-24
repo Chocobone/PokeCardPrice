@@ -8,6 +8,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -70,11 +71,12 @@ type tcgdexRun struct {
 	cmSrc     int16
 
 	mu      sync.Mutex
-	links   map[linkKey]int64 // TCGplayer 외부 ID → 변형
-	linked  map[int64]bool    // TCGplayer 연결이 있는 변형 (Q9)
+	links   map[linkKey]int64            // 저장된 TCGplayer 외부 ID → 변형
+	claims  map[linkKey]map[int64]string // 이번 실행에서 카드 상세가 준 TCGplayer 외부 ID → 변형 → 카드
+	linked  map[int64]bool               // TCGplayer 연결이 있는 변형 (Q9)
 	res     *Result
 	skips   map[string]int // Cardmarket 저장하지 않은 이유
-	tp      struct{ linked, unchanged, skipped int }
+	tp      struct{ linked, unchanged, skipped, duplicate int }
 	pending []pendingRows // 저장 대기 중인 Cardmarket 행
 	nRows   int
 	failed  map[string]bool // 실패한 카드 (재시도 대상)
@@ -130,7 +132,7 @@ func (s *TCGdex) Collect(ctx context.Context, opt Options) (Result, error) {
 	}
 	run := &tcgdexRun{
 		pool: s.pool, q: q, tcgcsvSrc: tcgcsvSrc.ID, cmSrc: cmSrc.ID,
-		links: links, linked: make(map[int64]bool, len(links)),
+		links: links, claims: map[linkKey]map[int64]string{}, linked: make(map[int64]bool, len(links)),
 		res: &res, skips: map[string]int{}, failed: map[string]bool{},
 	}
 	for _, v := range links {
@@ -152,6 +154,9 @@ func (s *TCGdex) Collect(ctx context.Context, opt Options) (Result, error) {
 		return res, err
 	}
 	res.Failed = slices.Sorted(maps.Keys(run.failed))
+	if err := run.applyLinks(ctx); err != nil {
+		return res, err
+	}
 
 	reasons := slices.Sorted(maps.Keys(run.skips))
 	attrs := make([]any, 0, 2*len(reasons))
@@ -159,7 +164,8 @@ func (s *TCGdex) Collect(ctx context.Context, opt Options) (Result, error) {
 		attrs = append(attrs, r, run.skips[r])
 	}
 	slog.Info("cardmarket skipped", attrs...)
-	slog.Info("tcgdex tcgplayer ids", "linked_new_or_changed", run.tp.linked, "unchanged", run.tp.unchanged, "skipped", run.tp.skipped)
+	slog.Info("tcgdex tcgplayer ids", "linked_new_or_changed", run.tp.linked, "unchanged", run.tp.unchanged,
+		"skipped", run.tp.skipped, "duplicate_product", run.tp.duplicate)
 	if len(res.Failed) > 0 {
 		return res, fmt.Errorf("카드 %d장 실패", len(res.Failed))
 	}
@@ -208,9 +214,7 @@ func (s *TCGdex) collectCard(ctx context.Context, run *tcgdexRun, c targetCard) 
 	if err != nil {
 		return err
 	}
-	if err := run.linkTCGPlayer(ctx, c, card); err != nil {
-		return err
-	}
+	run.claimTCGPlayer(c, card)
 
 	// 가격 형식 오류는 다시 받아도 같으므로 실패로 두지 않는다.
 	cm, err := card.Cardmarket()
@@ -272,16 +276,16 @@ func (run *tcgdexRun) flush(ctx context.Context) {
 	run.res.Saved += len(params)
 }
 
-// linkTCGPlayer 는 카드 상세 pricing.tcgplayer 의 상품 ID 를 external_ids 에 연결한다 (방법 A).
-// 저장된 연결과 같으면 다시 쓰지 않는다.
-func (run *tcgdexRun) linkTCGPlayer(ctx context.Context, c targetCard, card *tcgdex.Card) error {
+// claimTCGPlayer 는 카드 상세 pricing.tcgplayer 의 상품 ID 를 이번 실행의 연결 후보로 모은다 (방법 A).
+// 저장은 모든 카드를 받은 뒤 applyLinks 가 한다 (같은 상품 ID 를 여러 카드가 주는지 알아야 해서).
+func (run *tcgdexRun) claimTCGPlayer(c targetCard, card *tcgdex.Card) {
 	tp, err := card.TCGPlayer()
 	if err != nil {
 		slog.Warn("tcgdex tcgplayer pricing invalid", "card", c.key(), "err", err)
-		return nil
+		return
 	}
 	if tp == nil {
-		return nil
+		return
 	}
 	for _, k := range slices.Sorted(maps.Keys(tp.Variants)) {
 		p := tp.Variants[k]
@@ -299,27 +303,58 @@ func (run *tcgdexRun) linkTCGPlayer(ctx context.Context, c targetCard, card *tcg
 		}
 		lk := linkKey{ProductID: strconv.Itoa(p.ProductID), SubType: sub}
 		run.mu.Lock()
-		old, had := run.links[lk]
+		if run.claims[lk] == nil {
+			run.claims[lk] = map[int64]string{}
+		}
+		run.claims[lk][v.ID] = c.key()
+		// Q9 판단(Cardmarket 기본 필드 배분)에는 바로 쓴다. 중복 상품이어도 그 카드에 TCGplayer 상품이 있다는 뜻은 같다.
+		run.linked[v.ID] = true
 		run.mu.Unlock()
-		if had && old == v.ID {
-			run.countTP(func() { run.tp.unchanged++ })
+	}
+}
+
+// applyLinks 는 모은 연결 후보를 external_ids 에 저장한다. 저장된 연결과 같으면 다시 쓰지 않는다.
+//
+// TCGdex 는 서로 다른 카드에 같은 TCGplayer 상품 ID 를 주는 경우가 있다 (bw11-6 과 bw11-RC1 이 같은 상품 등).
+// 그런 상품은 어느 카드가 맞는지 알 수 없어 저장된 연결을 바꾸지 않는다 (duplicate_product).
+// 저장된 연결이 틀렸으면 TCGCSV 작업이 상품 번호로 걸러 내고 번호 대조로 다시 연결한다 (tcgcsv.go).
+func (run *tcgdexRun) applyLinks(ctx context.Context) error {
+	for _, lk := range slices.SortedFunc(maps.Keys(run.claims), compareLinkKey) {
+		vs := run.claims[lk]
+		if len(vs) > 1 {
+			cards := slices.Sorted(maps.Values(vs))
+			slog.Info("tcgplayer duplicate product", "product", lk.ProductID, "sub_type", lk.SubType, "cards", cards)
+			run.tp.duplicate++
+			continue
+		}
+		var v int64
+		for id := range vs {
+			v = id
+		}
+		old, had := run.links[lk]
+		if had && old == v {
+			run.tp.unchanged++
 			continue
 		}
 		if err := run.q.UpsertExternalID(ctx, dbq.UpsertExternalIDParams{
-			SourceID: run.tcgcsvSrc, ExternalID: lk.ProductID, ExternalSubID: lk.SubType, CardVariantID: v.ID,
+			SourceID: run.tcgcsvSrc, ExternalID: lk.ProductID, ExternalSubID: lk.SubType, CardVariantID: v,
 		}); err != nil {
 			return fmt.Errorf("external_ids 저장: %w", err)
 		}
 		if had {
-			slog.Info("tcgplayer link changed", "product", lk.ProductID, "sub_type", lk.SubType, "from", old, "to", v.ID)
+			slog.Info("tcgplayer link changed", "product", lk.ProductID, "sub_type", lk.SubType, "from", old, "to", v, "card", vs[v])
 		}
-		run.mu.Lock()
-		run.links[lk] = v.ID
-		run.linked[v.ID] = true
+		run.links[lk] = v
 		run.tp.linked++
-		run.mu.Unlock()
 	}
 	return nil
+}
+
+func compareLinkKey(a, b linkKey) int {
+	if c := strings.Compare(a.ProductID, b.ProductID); c != 0 {
+		return c
+	}
+	return strings.Compare(a.SubType, b.SubType)
 }
 
 func (run *tcgdexRun) countTP(f func()) {
