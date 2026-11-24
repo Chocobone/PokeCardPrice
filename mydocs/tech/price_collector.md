@@ -431,6 +431,17 @@ TCGdex 카드 상세 순회 작업(`tcgdex_cardmarket`)이 같은 응답 하나�
 - 별도 장비 실행: `scripts/collector.sh`가 `PRICES_*`를 넘기고, `status`에 소스별 최근 기준일·행 수와 환율을 보여 준다 (`mydocs/manual/collector_remote.md`).
 - 로그: 작업마다 `price source start`·`price source done`(`fetched`, `linked`, `saved`, `skipped`, `failed`, `duration`). 연결하지 않은 이유는 `tcgcsv skipped rows`, `cardmarket skipped`, 그룹 ↔ 세트 대응은 `tcgcsv group set mapping`.
 
+## 후속 타스크 인계
+
+| 타스크 | 인계 사항 |
+|--------|-----------|
+| #7 국내 거래가·일본판 참고가 | 일본판 TCGplayer 가격은 TCGCSV `Pokemon Japan`(그룹 코드 대응)으로, Cardmarket 가격은 `-holo` 포함 TCGdex로 들어온다. 일본판 리버스(`SV2a` 등 패턴 상품)는 TCGCSV에 연결되지 않고 Cardmarket에만 있다. 구판 일본 카드(번호 없음, `PMCG` 등)는 두 소스 모두 가격이 없다 |
+| #8 시세 조회 API | 원화 추이는 `ListPriceHistoryKRW`(변형·소스·기간)를 쓰거나 바탕으로 삼는다. 원화 값은 호출 측에서 `price × fx_rate`를 원 단위 반올림한다. `source_updated_at`으로 오래된 가격을 구분한다. 소스 기준일이 다르다 (TCGCSV는 UTC 전날, Cardmarket은 `updated` 날짜) |
+| #8 | 한 카드의 변형별 가격은 소스마다 붙는 변형이 다를 수 있다 (Q9 첫날, 초판에는 Cardmarket 없음). 변형 단위로 보여 주고, 카드 대표가를 만들 때는 규칙을 정해야 한다 |
+| #18 과거 이력 백필 | 연결은 `external_ids`를 그대로 쓰고, 상품 번호 확인(5단계) 규칙을 같이 적용한다 |
+| #17 TCG Pocket | 시세 수집은 실행마다 TCGdex `tcgp` 시리즈로 빼고 있다. 카탈로그에서 빼면 이 처리는 지워도 된다 |
+| 운영 | 매일 `tcgcsv skipped rows`의 `links_removed`, `tcgdex tcgplayer ids`의 `duplicate_product`, `price source done`의 `failed`를 본다. `links_removed`가 갑자기 늘면 번호 형식 변화(오탐)를 의심한다 |
+
 ## 참고 자료
 
 - TCGCSV: https://tcgcsv.com/ , https://tcgcsv.com/docs , https://tcgcsv.com/last-updated.txt
