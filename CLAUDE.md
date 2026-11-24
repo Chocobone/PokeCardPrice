@@ -104,12 +104,13 @@ docker compose exec backend go run ./cmd/migrate          # 상태 확인 (statu
 docker compose exec backend go run ./cmd/migrate down     # 마지막 1개 되돌리기
 docker compose exec backend go run ./cmd/migrate up       # 적용
 
-# 수집기 (매일 05:30 KST collect-daily: 카탈로그 갱신, 매월 1일은 카드 상세까지 전체 갱신)
+# 수집기 (매일 05:30 KST collect-daily: 카탈로그 갱신 → 해외 시세 수집(환율·TCGCSV·Cardmarket, 약 2시간 30분). 매월 1일은 카탈로그 카드 상세까지 전체 갱신)
 docker compose logs -f collector                          # 로그
-docker compose exec backend go run ./cmd/collector -once  # 수집 작업 즉시 1회 실행 (빈 DB 첫 적재는 약 3시간, 새 카드가 없는 갱신은 약 2분)
+docker compose exec backend go run ./cmd/collector -once  # 수집 작업 즉시 1회 실행 (빈 DB 첫 적재는 약 6시간, 새 카드가 없는 날은 카탈로그 약 2분 + 시세 약 2시간 30분)
 COLLECTOR_INTERVAL=30s docker compose up -d collector     # 짧은 간격으로 반복 실행 (개발용)
 # 카탈로그 범위 (개발용, 비우면 전체): CATALOG_LANGUAGES=en,ja / CATALOG_SETS=sv03.5,SV5K / CATALOG_FULL=true(매번 전체 갱신)
-docker compose exec -e CATALOG_LANGUAGES=en -e CATALOG_SETS=sv03.5 backend go run ./cmd/collector -once
+# 시세 범위 (개발용): 언어·세트는 CATALOG_* 를 함께 쓴다 / PRICES_SOURCES=fx,tcgcsv,tcgdex_cardmarket (none 이면 끔) / PRICES_TCGCSV_GROUPS=23237 (TCGCSV 영어판 그룹 ID)
+docker compose exec -e CATALOG_LANGUAGES=en -e CATALOG_SETS=sv03.5 -e PRICES_TCGCSV_GROUPS=23237 backend go run ./cmd/collector -once
 # 별도 장비에서 수집기만 실행: 저장소 루트에서 scripts/collector.sh setup|start|once -d|status (mydocs/manual/collector_remote.md)
 
 # sqlc 코드 생성 (internal/db/queries/*.sql → internal/db/dbq)
@@ -130,6 +131,7 @@ docker compose down -v                # 볼륨 삭제 (DB 초기화)
 - 백엔드 기술: Echo v5, sqlc + pgx v5, goose(마이그레이션, `src/backend/migrations/`), gocron v2(수집 일정). 선정 근거는 `mydocs/tech/backend_stack.md`.
 - DB 스키마 설계와 근거는 `mydocs/tech/db_schema.md`. 금액은 `shopspring/decimal`, NULL 허용 컬럼은 포인터로 생성된다(`sqlc.yaml`). 쿼리를 바꾸면 `go tool sqlc generate` 후 생성 코드(`internal/db/dbq`)도 함께 커밋한다.
 - 카탈로그 수집기(`internal/tcgdex`, `internal/catalog`)의 호출 규칙·한글판 연결 규칙·변형 매핑은 `mydocs/tech/catalog_collector.md`. 포켓몬 종 이름은 `internal/species`에 내장(PokeAPI, 라이선스 `LICENSE.pokeapi.md`).
+- 해외 시세 수집기(`internal/prices`, `internal/tcgcsv`, `internal/fx`, `internal/httpx`)의 상품 ↔ 변형 연결 규칙·Cardmarket 배분 규칙·실행 순서는 `mydocs/tech/price_collector.md`. 가격은 소스 통화로 저장하고 원화는 `ListPriceHistoryKRW`(직전 환율)로 조회할 때 환산한다.
 - DB 테스트는 테스트 DB의 `public` 스키마를 매번 비운다. DB 테스트가 있는 패키지는 `dbtest.Pool(t, "<패키지명>")`으로 패키지별 테스트 DB를 쓴다(`go test ./...` 동시 실행 대비). `TEST_DATABASE_URL`을 개발 DB로 지정하면 테스트가 실패하도록 막아 두었다.
 
 ---

@@ -57,6 +57,10 @@ services:
       CATALOG_LANGUAGES: ${CATALOG_LANGUAGES:-}
       CATALOG_SETS: ${CATALOG_SETS:-}
       CATALOG_FULL: ${CATALOG_FULL:-}
+      # 해외 시세 수집 (개발용, 비우면 전체). 예: PRICES_SOURCES=fx,tcgcsv (none 이면 끔) PRICES_TCGCSV_GROUPS=23237
+      # 언어·세트 범위는 CATALOG_LANGUAGES·CATALOG_SETS 를 함께 쓴다.
+      PRICES_SOURCES: ${PRICES_SOURCES:-}
+      PRICES_TCGCSV_GROUPS: ${PRICES_TCGCSV_GROUPS:-}
     volumes:
       - ../src/backend:/app
       - go-mod:/go/pkg/mod

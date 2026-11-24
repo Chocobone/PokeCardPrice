@@ -171,6 +171,70 @@ func TestFxRateOnOrBefore(t *testing.T) {
 	}
 }
 
+func TestPriceHistoryKRW(t *testing.T) {
+	ctx, q := migratedQueries(t)
+	_, variantID := newVariant(ctx, t, q)
+	src, err := q.GetPriceSourceByCode(ctx, "tcgcsv") // USD
+	if err != nil {
+		t.Fatal(err)
+	}
+	fxRows := []dbq.UpsertFxRateParams{
+		{BaseCurrency: "USD", QuoteCurrency: "KRW", RateDate: date("2026-11-19"), Provider: "frankfurter", Rate: dec("1330")},
+		{BaseCurrency: "USD", QuoteCurrency: "KRW", RateDate: date("2026-11-20"), Provider: "frankfurter", Rate: dec("1333.27")},
+		{BaseCurrency: "USD", QuoteCurrency: "KRW", RateDate: date("2026-11-23"), Provider: "frankfurter", Rate: dec("1340")},
+		// 쓰이지 않아야 하는 값: 다른 제공처, 다른 통화
+		{BaseCurrency: "USD", QuoteCurrency: "KRW", RateDate: date("2026-11-21"), Provider: "koreaexim", Rate: dec("9999")},
+		{BaseCurrency: "EUR", QuoteCurrency: "KRW", RateDate: date("2026-11-21"), Provider: "frankfurter", Rate: dec("1478.66")},
+	}
+	for _, r := range fxRows {
+		if err := q.UpsertFxRate(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var rows []dbq.UpsertPriceHistoryParams
+	for _, d := range []string{"2026-11-02", "2026-11-20", "2026-11-21", "2026-11-23"} {
+		rows = append(rows, dbq.UpsertPriceHistoryParams{CardVariantID: variantID, SourceID: src.ID, PriceDate: date(d), Price: dec("0.27"), PriceBasis: "market"})
+	}
+	q.UpsertPriceHistory(ctx, rows).Exec(func(i int, err error) {
+		if err != nil {
+			t.Fatalf("row %d: %v", i, err)
+		}
+	})
+
+	got, err := q.ListPriceHistoryKRW(ctx, dbq.ListPriceHistoryKRWParams{FxProvider: "frankfurter", CardVariantID: variantID, SourceID: src.ID, FromDate: date("2026-11-01")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []struct{ price, fxDate, krw string }{
+		{"2026-11-02", "", ""},              // 첫 환율보다 이른 날
+		{"2026-11-20", "2026-11-20", "360"}, // 0.27 × 1333.27 = 359.98
+		{"2026-11-21", "2026-11-20", "360"}, // 토요일: 직전 값
+		{"2026-11-23", "2026-11-23", "362"}, // 0.27 × 1340 = 361.8
+	}
+	if len(got) != len(want) {
+		t.Fatalf("rows = %+v", got)
+	}
+	for i, w := range want {
+		r := got[i]
+		if r.PriceDate.Format(time.DateOnly) != w.price || r.Currency != "USD" {
+			t.Errorf("row %d = %+v", i, r)
+		}
+		if w.fxDate == "" {
+			if r.FxRateDate != nil || r.FxRate != nil {
+				t.Errorf("row %d: 환율이 없어야 함: %+v", i, r)
+			}
+			continue
+		}
+		if r.FxRateDate == nil || r.FxRateDate.Format(time.DateOnly) != w.fxDate || r.FxRate == nil {
+			t.Errorf("row %d: fx = %v %v, want %s", i, r.FxRateDate, r.FxRate, w.fxDate)
+			continue
+		}
+		if krw := r.Price.Mul(*r.FxRate).Round(0); krw.String() != w.krw {
+			t.Errorf("row %d: krw = %s, want %s", i, krw, w.krw)
+		}
+	}
+}
+
 func TestUserCollectionAndTrade(t *testing.T) {
 	ctx, q := migratedQueries(t)
 	_, variantID := newVariant(ctx, t, q)

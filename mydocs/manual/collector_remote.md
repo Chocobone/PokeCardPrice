@@ -7,13 +7,14 @@
 
 | 작업 | 시각 | 내용 | 소요 시간 (참고) |
 |------|------|------|-----------|
-| `collect-daily` | 매일 05:30 KST | 종 이름 적재 → 세트 목록·세트 상세(약 520회) → 신규 카드만 카드 상세 → 한글판 연결 | 수 분 |
-| 〃 (전체 갱신) | 매월 1일 05:30 KST | 위와 같고, 모든 카드의 카드 상세를 다시 받는다 | 3~4시간 |
-| 첫 적재 | 직접 실행 | 빈 DB에서 모든 카드 상세를 받는다 | 3~4시간 |
+| `collect-daily` | 매일 05:30 KST | 카탈로그: 종 이름 적재 → 세트 목록·세트 상세(약 520회) → 신규 카드만 카드 상세 → 한글판 연결. 이어서 해외 시세: 환율(Frankfurter 2회) ‖ TCGplayer 가격(TCGCSV 약 1,370회) ‖ Cardmarket 가격(TCGdex 카드 상세 약 3만 5천 회) | 카탈로그 수 분 + 시세 약 2시간 30분 |
+| 〃 (전체 갱신) | 매월 1일 05:30 KST | 위와 같고, 카탈로그가 모든 카드의 카드 상세를 다시 받는다 | 카탈로그 3~4시간 + 시세 약 2시간 30분 |
+| 첫 적재 | 직접 실행 | 빈 DB에서 모든 카드 상세를 받고 시세를 수집한다 | 6시간 안팎 |
 
 - 작업은 겹쳐 실행되지 않는다. 이전 실행이 끝나지 않았으면 그 회차를 건너뛴다.
 - 일부 세트만 실패하면 로그에 `WARN`을 남기고 다음 실행에서 다시 시도한다.
-- 외부 호출 규칙(요청 간격 250ms, 동시성 2)은 `mydocs/tech/catalog_collector.md` 참고.
+- 카탈로그가 실패해도 시세는 이미 적재된 카드로 수집한다.
+- 외부 호출 규칙은 `mydocs/tech/catalog_collector.md`(TCGdex 요청 간격 250ms, 동시성 2)와 `mydocs/tech/price_collector.md`(TCGCSV 요청 간 120ms, 동시성 1) 참고. TCGdex는 카탈로그와 시세가 같은 요청 간격을 나눠 쓴다.
 
 ## 준비물
 
@@ -58,11 +59,13 @@ scripts/collector.sh stop         # 중지
 | `stop` / `restart` | 상시 실행 수집기 중지 / 재시작 |
 | `once [-d]` | 1회 실행. `-d`면 백그라운드로 실행해 SSH 접속이 끊겨도 계속된다 |
 | `full [-d]` | 전체 갱신으로 1회 실행 |
-| `status` | 컨테이너 상태와 카탈로그 행 수 (이 장비 DB일 때만) |
+| `status` | 컨테이너 상태와 카탈로그 행 수, 소스별 최근 시세 기준일·행 수, 환율 (이 장비 DB일 때만) |
 | `logs` | 상시 실행 로그 (Ctrl+C로 빠져나옴) |
 
 - `once`·`full`은 상시 실행 수집기가 떠 있으면 실행하지 않는다 (같은 테이블에 동시에 쓰지 않도록). `stop` 후 실행하고, 끝나면 `start`한다.
-- 범위를 줄여 시험할 때: `CATALOG_LANGUAGES=en CATALOG_SETS=sv03.5 scripts/collector.sh once`
+- 범위를 줄여 시험할 때: `CATALOG_LANGUAGES=en CATALOG_SETS=sv03.5 PRICES_TCGCSV_GROUPS=23237 scripts/collector.sh once`
+  - 시세 범위는 카탈로그와 같은 언어·세트를 쓴다. TCGCSV 영어판 그룹은 세트 ID로 고를 수 없어 `PRICES_TCGCSV_GROUPS`로 지정한다 (예: `sv03.5` → `23237`).
+  - 카탈로그만 돌리려면 `PRICES_SOURCES=none`, 시세 작업 일부만 돌리려면 `PRICES_SOURCES=fx,tcgcsv`.
 - 상시 실행(`start`)의 설정은 `Docker/.env`에 적는다. 실행 시 지정한 환경 변수는 `once`·`full`에만 적용된다.
 
 ## 업데이트

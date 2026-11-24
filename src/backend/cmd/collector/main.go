@@ -1,14 +1,15 @@
 // Card-Market 시세 수집기 진입점.
 //
 // 기본은 일정(매일 05:30 KST)에 따라 수집 작업을 실행하며 계속 떠 있는다.
-// 매일 작업은 카드 카탈로그(#5)를 갱신하고, 매월 1일에는 카드 상세까지 전체 갱신한다.
+// 매일 작업은 카드 카탈로그(#5)를 갱신하고(매월 1일에는 카드 상세까지 전체 갱신), 이어서 해외 시세(#6)를 수집한다.
 // -once 를 주면 모든 작업을 한 번씩 바로 실행하고 끝난다(개발·수동 수집용).
 // COLLECTOR_INTERVAL(예: 30s)을 설정하면 일정 대신 그 간격으로 실행한다(개발용).
-// 카탈로그 범위 환경 변수(CATALOG_*)는 catalog.go 참고.
+// 카탈로그 범위 환경 변수(CATALOG_*)는 catalog.go, 시세 환경 변수(PRICES_*)는 prices.go 참고.
 package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db"
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/scheduler"
+	"github.com/Chocobone/PokeCardPrice/src/backend/internal/tcgdex"
 )
 
 func main() {
@@ -68,6 +70,13 @@ func run(once bool) error {
 	if err != nil {
 		return err
 	}
+	priceCfg, err := pricesConfigFromEnv(catCfg)
+	if err != nil {
+		return err
+	}
+	// 카탈로그와 시세(Cardmarket)가 같은 TCGdex 클라이언트를 써서 요청 간격을 공유한다.
+	td := tcgdex.New()
+	priceRunner := newPriceRunner(pool, td)
 	// 매월 1일 전체 갱신은 매일 일정 실행에서만 한다 (-once·COLLECTOR_INTERVAL 은 CATALOG_FULL 로 정한다).
 	scheduled := !once && os.Getenv("COLLECTOR_INTERVAL") == ""
 
@@ -76,10 +85,14 @@ func run(once bool) error {
 			Name: "collect-daily",
 			When: daily,
 			// 시세는 카드가 있어야 저장할 수 있어, 한 작업 안에서 카탈로그 → 시세 순으로 실행한다.
-			// 해외 시세(#6), 국내 거래가(#7)는 카탈로그 뒤에 이어 붙인다.
+			// 카탈로그가 실패해도 시세는 이미 적재된 카드로 수집한다. 국내 거래가(#7)는 시세 뒤에 이어 붙인다.
 			Run: func(ctx context.Context) error {
 				full := scheduled && isFullRefreshDay(time.Now().In(loc))
-				return collectCatalog(ctx, pool, catCfg, full)
+				catErr := collectCatalog(ctx, pool, td, catCfg, full)
+				if ctx.Err() != nil {
+					return errors.Join(catErr, ctx.Err())
+				}
+				return errors.Join(catErr, collectPrices(ctx, priceRunner, priceCfg))
 			},
 		},
 	}

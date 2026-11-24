@@ -12,6 +12,53 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const deleteExternalIDLink = `-- name: DeleteExternalIDLink :execrows
+DELETE FROM external_ids
+WHERE source_id = $1 AND external_id = $2 AND external_sub_id = $3
+  AND card_variant_id = $4
+`
+
+type DeleteExternalIDLinkParams struct {
+	SourceID      int16
+	ExternalID    string
+	ExternalSubID string
+	CardVariantID int64
+}
+
+// 외부 ID 연결을 지운다. 그사이 다른 변형으로 바뀌었으면 지우지 않는다 (#6 상품 번호가 맞지 않는 연결).
+func (q *Queries) DeleteExternalIDLink(ctx context.Context, arg DeleteExternalIDLinkParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteExternalIDLink,
+		arg.SourceID,
+		arg.ExternalID,
+		arg.ExternalSubID,
+		arg.CardVariantID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteVariantSourcePrices = `-- name: DeleteVariantSourcePrices :execrows
+DELETE FROM price_history
+WHERE card_variant_id = $1 AND source_id = $2 AND price_date < $3
+`
+
+type DeleteVariantSourcePricesParams struct {
+	CardVariantID int64
+	SourceID      int16
+	BeforeDate    time.Time
+}
+
+// 변형 하나의 소스 가격 중 before_date 보다 이른 날을 지운다 (#6 잘못된 연결로 저장된 가격 정리).
+func (q *Queries) DeleteVariantSourcePrices(ctx context.Context, arg DeleteVariantSourcePricesParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteVariantSourcePrices, arg.CardVariantID, arg.SourceID, arg.BeforeDate)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const findVariantByExternalID = `-- name: FindVariantByExternalID :one
 SELECT card_variant_id FROM external_ids
 WHERE source_id = $1 AND external_id = $2 AND external_sub_id = $3
@@ -84,6 +131,56 @@ func (q *Queries) GetPriceSourceByCode(ctx context.Context, code string) (PriceS
 	return i, err
 }
 
+const listExternalIDLinks = `-- name: ListExternalIDLinks :many
+SELECT e.external_id, e.external_sub_id, e.card_variant_id, s.language, s.tcgdex_id AS set_tcgdex_id,
+       c.tcgdex_id AS card_tcgdex_id, c.local_id
+FROM external_ids e
+JOIN card_variants v ON v.id = e.card_variant_id
+JOIN cards c ON c.id = v.card_id
+JOIN sets s ON s.id = c.set_id
+WHERE e.source_id = $1
+`
+
+type ListExternalIDLinksRow struct {
+	ExternalID    string
+	ExternalSubID string
+	CardVariantID int64
+	Language      string
+	SetTcgdexID   string
+	CardTcgdexID  string
+	LocalID       string
+}
+
+// 소스의 외부 ID 전체와 연결된 변형의 세트·카드 번호
+// (#6 TCGCSV: 저장된 연결 재사용, 상품 번호 확인, 그룹 ↔ 세트 대응).
+func (q *Queries) ListExternalIDLinks(ctx context.Context, sourceID int16) ([]ListExternalIDLinksRow, error) {
+	rows, err := q.db.Query(ctx, listExternalIDLinks, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListExternalIDLinksRow
+	for rows.Next() {
+		var i ListExternalIDLinksRow
+		if err := rows.Scan(
+			&i.ExternalID,
+			&i.ExternalSubID,
+			&i.CardVariantID,
+			&i.Language,
+			&i.SetTcgdexID,
+			&i.CardTcgdexID,
+			&i.LocalID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPriceHistory = `-- name: ListPriceHistory :many
 SELECT price_date, price, price_basis
 FROM price_history
@@ -117,6 +214,210 @@ func (q *Queries) ListPriceHistory(ctx context.Context, arg ListPriceHistoryPara
 			return nil, err
 		}
 		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPriceHistoryKRW = `-- name: ListPriceHistoryKRW :many
+SELECT p.price_date, p.price, p.price_basis, s.currency, p.source_updated_at,
+       f.rate_date AS fx_rate_date, f.rate AS fx_rate
+FROM price_history p
+JOIN price_sources s ON s.id = p.source_id
+LEFT JOIN LATERAL (
+  SELECT f2.rate_date AS on_date
+  FROM fx_rates f2
+  WHERE f2.base_currency = s.currency AND f2.quote_currency = 'KRW'
+    AND f2.provider = $1 AND f2.rate_date <= p.price_date
+  ORDER BY f2.rate_date DESC
+  LIMIT 1
+) last ON true
+LEFT JOIN fx_rates f
+  ON f.base_currency = s.currency AND f.quote_currency = 'KRW' AND f.provider = $1
+ AND f.rate_date = last.on_date
+WHERE p.card_variant_id = $2 AND p.source_id = $3 AND p.price_date >= $4
+ORDER BY p.price_date
+`
+
+type ListPriceHistoryKRWParams struct {
+	FxProvider    string
+	CardVariantID int64
+	SourceID      int16
+	FromDate      time.Time
+}
+
+type ListPriceHistoryKRWRow struct {
+	PriceDate       time.Time
+	Price           decimal.Decimal
+	PriceBasis      string
+	Currency        string
+	SourceUpdatedAt *time.Time
+	FxRateDate      *time.Time
+	FxRate          *decimal.Decimal
+}
+
+// 변형 1개·소스 1개의 기간 추이를 원화로 환산한다 (#6, #8 시세 조회의 출발점).
+// 환율은 price_date 이전 가장 가까운 값이다 (주말·공휴일·수집 누락일은 직전 값, fx_rates 기본 키 역순 스캔).
+// 환율이 없으면(첫 환율보다 이른 날, 소스 통화가 KRW) fx_* 가 NULL 이다.
+// 원화 값은 호출 측에서 decimal 로 price * fx_rate 를 원 단위 반올림한다 (SQL 계산 결과는 sqlc 가 decimal 로 만들지 않는다).
+// 직전 환율 날짜는 LATERAL(기본 키 역순 스캔)로 구하고, 값은 그 날짜로 기본 키 조회한다.
+// LATERAL 결과 열은 sqlc 가 NULL 불가로 만들어서, 값은 테이블 LEFT JOIN 으로 가져온다.
+func (q *Queries) ListPriceHistoryKRW(ctx context.Context, arg ListPriceHistoryKRWParams) ([]ListPriceHistoryKRWRow, error) {
+	rows, err := q.db.Query(ctx, listPriceHistoryKRW,
+		arg.FxProvider,
+		arg.CardVariantID,
+		arg.SourceID,
+		arg.FromDate,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPriceHistoryKRWRow
+	for rows.Next() {
+		var i ListPriceHistoryKRWRow
+		if err := rows.Scan(
+			&i.PriceDate,
+			&i.Price,
+			&i.PriceBasis,
+			&i.Currency,
+			&i.SourceUpdatedAt,
+			&i.FxRateDate,
+			&i.FxRate,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listPriceTargetCards = `-- name: ListPriceTargetCards :many
+SELECT c.language, c.tcgdex_id, s.tcgdex_id AS set_tcgdex_id,
+       array_agg(v.variant ORDER BY v.id)::text[] AS variants,
+       array_agg(v.id ORDER BY v.id)::bigint[] AS variant_ids
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+JOIN card_variants v ON v.card_id = c.id
+WHERE c.language = ANY($1::text[])
+  AND (cardinality($2::text[]) = 0 OR s.tcgdex_id = ANY($2::text[]))
+  AND NOT ((c.language || ':' || s.tcgdex_id) = ANY($3::text[]))
+GROUP BY c.id, s.tcgdex_id
+ORDER BY c.language, s.tcgdex_id, c.id
+`
+
+type ListPriceTargetCardsParams struct {
+	Languages    []string
+	SetTcgdexIds []string
+	ExcludeSets  []string
+}
+
+type ListPriceTargetCardsRow struct {
+	Language    string
+	TcgdexID    string
+	SetTcgdexID string
+	Variants    []string
+	VariantIds  []int64
+}
+
+// 시세 수집 대상 카드와 변형 (#6 TCGdex 카드 상세 순회).
+// set_tcgdex_ids 가 비어 있으면 모든 세트. exclude_sets 는 "언어:세트ID" 목록이다 (TCG Pocket 제외, Q6).
+func (q *Queries) ListPriceTargetCards(ctx context.Context, arg ListPriceTargetCardsParams) ([]ListPriceTargetCardsRow, error) {
+	rows, err := q.db.Query(ctx, listPriceTargetCards, arg.Languages, arg.SetTcgdexIds, arg.ExcludeSets)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListPriceTargetCardsRow
+	for rows.Next() {
+		var i ListPriceTargetCardsRow
+		if err := rows.Scan(
+			&i.Language,
+			&i.TcgdexID,
+			&i.SetTcgdexID,
+			&i.Variants,
+			&i.VariantIds,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSetCardVariants = `-- name: ListSetCardVariants :many
+SELECT c.id AS card_id, c.local_id, v.id AS card_variant_id, v.variant
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+JOIN card_variants v ON v.card_id = c.id
+WHERE s.language = $1 AND s.tcgdex_id = $2
+ORDER BY c.id, v.id
+`
+
+type ListSetCardVariantsParams struct {
+	Language    string
+	SetTcgdexID string
+}
+
+type ListSetCardVariantsRow struct {
+	CardID        int64
+	LocalID       string
+	CardVariantID int64
+	Variant       string
+}
+
+// 세트의 카드와 변형 (#6 TCGCSV 번호 대조).
+func (q *Queries) ListSetCardVariants(ctx context.Context, arg ListSetCardVariantsParams) ([]ListSetCardVariantsRow, error) {
+	rows, err := q.db.Query(ctx, listSetCardVariants, arg.Language, arg.SetTcgdexID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListSetCardVariantsRow
+	for rows.Next() {
+		var i ListSetCardVariantsRow
+		if err := rows.Scan(
+			&i.CardID,
+			&i.LocalID,
+			&i.CardVariantID,
+			&i.Variant,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listSetTcgdexIDs = `-- name: ListSetTcgdexIDs :many
+SELECT tcgdex_id FROM sets WHERE language = $1 ORDER BY tcgdex_id
+`
+
+// 언어의 세트 ID 전체 (#6 TCGCSV 그룹 코드 대응).
+func (q *Queries) ListSetTcgdexIDs(ctx context.Context, language string) ([]string, error) {
+	rows, err := q.db.Query(ctx, listSetTcgdexIDs, language)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []string
+	for rows.Next() {
+		var tcgdex_id string
+		if err := rows.Scan(&tcgdex_id); err != nil {
+			return nil, err
+		}
+		items = append(items, tcgdex_id)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

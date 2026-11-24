@@ -99,6 +99,15 @@ func (c *Client) GetSet(ctx context.Context, lang, id string) (*Set, error) {
 	return &out, nil
 }
 
+// GetSerie 는 시리즈 상세(속한 세트 목록 포함)를 돌려준다.
+func (c *Client) GetSerie(ctx context.Context, lang, id string) (*Serie, error) {
+	var out Serie
+	if err := c.get(ctx, "/"+url.PathEscape(lang)+"/series/"+url.PathEscape(id), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // GetCard 는 카드 상세를 돌려준다.
 // TCGdex 카드 ID 에는 "%3F" 같은 문자가 그대로 들어 있어(exu-%3F) 반드시 경로 인코딩해서 보낸다.
 func (c *Client) GetCard(ctx context.Context, lang, id string) (*Card, error) {

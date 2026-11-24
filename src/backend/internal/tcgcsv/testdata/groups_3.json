@@ -1,0 +1,34 @@
+{
+ "totalItems": 3,
+ "success": true,
+ "errors": [],
+ "results": [
+  {
+   "groupId": 24688,
+   "name": "ME05: Pitch Black",
+   "abbreviation": "PBL",
+   "isSupplemental": false,
+   "publishedOn": "2026-07-17T00:00:00",
+   "modifiedOn": "2026-11-20T20:11:52.65",
+   "categoryId": 3
+  },
+  {
+   "groupId": 23237,
+   "name": "SV: Scarlet & Violet 151",
+   "abbreviation": "MEW",
+   "isSupplemental": false,
+   "publishedOn": "2023-09-22T00:00:00",
+   "modifiedOn": "2026-11-19T22:26:12.647",
+   "categoryId": 3
+  },
+  {
+   "groupId": 604,
+   "name": "Base Set",
+   "abbreviation": "BS",
+   "isSupplemental": false,
+   "publishedOn": "1999-01-09T00:00:00",
+   "modifiedOn": "2026-10-19T18:50:49.3",
+   "categoryId": 3
+  }
+ ]
+}

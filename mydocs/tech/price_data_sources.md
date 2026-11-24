@@ -268,7 +268,7 @@ TCGCSV가 TCGplayer 데이터를 재공개할 권한이 있는지, TCGplayer 약
 | TCGdex `pricing.tcgplayer`가 모두 `null`인 원인 | #6 (TCGCSV 사용 시 영향 없음). #5 조사(2026-11-10)에서 다시 채워진 것을 확인 (`catalog_collector.md` 8절) |
 | 한글판·일본판 세트 코드·번호 일치 범위 | #5 완료: `ko` 세트 91/95가 `ja`와 ID 일치, `ko` 카드 239장 모두 같은 ID·`dexId`의 `ja` 카드와 자동 연결 (`catalog_collector.md` 4절·구현 결과) |
 | 한글판 카드 이름 (TCGdex `ko` 미수록 카드) | #5 확인: 해외 공개 소스로는 얻을 수 없음. 포켓몬 카드는 한글 종 이름(`pokemon_species`)으로 검색 보완, 트레이너스·에너지는 범위 밖 (`catalog_collector.md` 7절) |
-| Frankfurter 호출 한도·공휴일 동작 | #6 |
+| Frankfurter 호출 한도·공휴일 동작 | #6 확인 (2026-11-19): 응답 헤더·문서에 한도 없음, 주말·공휴일에도 그 날짜 혼합값, 미래 날짜는 최신 값. 응답 `date`를 기준일로 저장 (`price_collector.md` 6절) |
 
 ## 참고 자료
 
