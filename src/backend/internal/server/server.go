@@ -21,6 +21,11 @@ type Pinger interface {
 
 // New 는 API 라우터를 반환한다. q 는 카드 API 가 쓰는 쿼리이다 (읽기 전용).
 func New(db Pinger, q *dbq.Queries) http.Handler {
+	return newRouter(db, q, time.Now)
+}
+
+// newRouter 는 New 와 같고, 시세 기간 계산에 쓸 현재 시각을 바꿀 수 있다 (테스트용).
+func newRouter(db Pinger, q *dbq.Queries, now func() time.Time) http.Handler {
 	e := echo.New()
 	e.HTTPErrorHandler = errorHandler
 	e.Use(middleware.RequestLogger())
@@ -28,8 +33,10 @@ func New(db Pinger, q *dbq.Queries) http.Handler {
 
 	e.GET("/healthz", healthz(db))
 
-	h := &cardHandlers{q: q}
+	h := &cardHandlers{q: q, now: now}
 	e.GET("/cards", h.search)
+	e.GET("/cards/:id", h.detail)
+	e.GET("/cards/:id/prices", h.prices)
 	return e
 }
 

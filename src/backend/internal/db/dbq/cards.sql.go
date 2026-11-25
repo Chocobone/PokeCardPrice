@@ -12,6 +12,130 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const getCardDetail = `-- name: GetCardDetail :one
+SELECT c.id, c.language, c.tcgdex_id, c.name, c.local_id, c.rarity, c.image_url, c.dex_ids, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, s.release_date AS set_release_date,
+       s.logo_url AS set_logo_url, s.card_count AS set_card_count,
+       p.name_ko AS species_name_ko
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species p ON p.dex_id = c.dex_ids[1]
+WHERE c.id = $1
+`
+
+type GetCardDetailRow struct {
+	ID             int64
+	Language       string
+	TcgdexID       string
+	Name           string
+	LocalID        string
+	Rarity         *string
+	ImageUrl       *string
+	DexIds         []int32
+	HasKoEdition   bool
+	SetTcgdexID    string
+	SetName        string
+	SetReleaseDate *time.Time
+	SetLogoUrl     *string
+	SetCardCount   *int32
+	SpeciesNameKo  *string
+}
+
+// 카드 상세 (#8 GET /cards/{id}). 종 이름은 첫 도감 번호 기준이다.
+func (q *Queries) GetCardDetail(ctx context.Context, id int64) (GetCardDetailRow, error) {
+	row := q.db.QueryRow(ctx, getCardDetail, id)
+	var i GetCardDetailRow
+	err := row.Scan(
+		&i.ID,
+		&i.Language,
+		&i.TcgdexID,
+		&i.Name,
+		&i.LocalID,
+		&i.Rarity,
+		&i.ImageUrl,
+		&i.DexIds,
+		&i.HasKoEdition,
+		&i.SetTcgdexID,
+		&i.SetName,
+		&i.SetReleaseDate,
+		&i.SetLogoUrl,
+		&i.SetCardCount,
+		&i.SpeciesNameKo,
+	)
+	return i, err
+}
+
+const listCardPriceHistory = `-- name: ListCardPriceHistory :many
+SELECT v.id AS card_variant_id, v.variant, src.code AS source, src.currency,
+       ph.price_date, ph.price, ph.source_updated_at,
+       f.rate_date AS fx_rate_date, f.rate AS fx_rate
+FROM card_variants v
+JOIN price_history ph ON ph.card_variant_id = v.id
+JOIN price_sources src ON src.id = ph.source_id
+LEFT JOIN LATERAL (
+  SELECT f2.rate_date AS on_date FROM fx_rates f2
+  WHERE f2.base_currency = src.currency AND f2.quote_currency = 'KRW'
+    AND f2.provider = $1 AND f2.rate_date <= ph.price_date
+  ORDER BY f2.rate_date DESC
+  LIMIT 1
+) fxd ON true
+LEFT JOIN fx_rates f
+  ON f.base_currency = src.currency AND f.quote_currency = 'KRW' AND f.provider = $1
+ AND f.rate_date = fxd.on_date
+WHERE v.card_id = $2 AND ph.price_date >= $3 AND src.price_kind = 'sale'
+ORDER BY v.id, src.id, ph.price_date
+`
+
+type ListCardPriceHistoryParams struct {
+	FxProvider string
+	CardID     int64
+	FromDate   time.Time
+}
+
+type ListCardPriceHistoryRow struct {
+	CardVariantID   int64
+	Variant         string
+	Source          string
+	Currency        string
+	PriceDate       time.Time
+	Price           decimal.Decimal
+	SourceUpdatedAt *time.Time
+	FxRateDate      *time.Time
+	FxRate          *decimal.Decimal
+}
+
+// 카드의 모든 변형 × 판매가 소스의 기간 추이와 직전 환율 (#8 GET /cards/{id}/prices).
+// 환율 조회 방식은 ListPriceHistoryKRW 와 같다.
+func (q *Queries) ListCardPriceHistory(ctx context.Context, arg ListCardPriceHistoryParams) ([]ListCardPriceHistoryRow, error) {
+	rows, err := q.db.Query(ctx, listCardPriceHistory, arg.FxProvider, arg.CardID, arg.FromDate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListCardPriceHistoryRow
+	for rows.Next() {
+		var i ListCardPriceHistoryRow
+		if err := rows.Scan(
+			&i.CardVariantID,
+			&i.Variant,
+			&i.Source,
+			&i.Currency,
+			&i.PriceDate,
+			&i.Price,
+			&i.SourceUpdatedAt,
+			&i.FxRateDate,
+			&i.FxRate,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listLatestPrices = `-- name: ListLatestPrices :many
 SELECT v.card_id, v.id AS card_variant_id, v.variant, src.code AS source, src.currency,
        ph.price_date, ph.price, ph.source_updated_at,
@@ -80,6 +204,62 @@ func (q *Queries) ListLatestPrices(ctx context.Context, arg ListLatestPricesPara
 			&i.SourceUpdatedAt,
 			&i.FxRateDate,
 			&i.FxRate,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listLinkedCards = `-- name: ListLinkedCards :many
+SELECT c.id, c.language, c.tcgdex_id, c.name, c.local_id, c.image_url, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, p.name_ko AS species_name_ko
+FROM card_links l
+JOIN cards c ON c.id = CASE WHEN l.card_id = $1 THEN l.linked_card_id ELSE l.card_id END
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species p ON p.dex_id = c.dex_ids[1]
+WHERE l.card_id = $1 OR l.linked_card_id = $1
+ORDER BY c.language, s.release_date DESC NULLS LAST, c.tcgdex_id
+`
+
+type ListLinkedCardsRow struct {
+	ID            int64
+	Language      string
+	TcgdexID      string
+	Name          string
+	LocalID       string
+	ImageUrl      *string
+	HasKoEdition  bool
+	SetTcgdexID   string
+	SetName       string
+	SpeciesNameKo *string
+}
+
+// 한글판 ↔ 일본판 연결 카드 (card_links 양방향). 한글판이면 일본판, 일본판이면 한글판들이다.
+func (q *Queries) ListLinkedCards(ctx context.Context, cardID int64) ([]ListLinkedCardsRow, error) {
+	rows, err := q.db.Query(ctx, listLinkedCards, cardID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListLinkedCardsRow
+	for rows.Next() {
+		var i ListLinkedCardsRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Language,
+			&i.TcgdexID,
+			&i.Name,
+			&i.LocalID,
+			&i.ImageUrl,
+			&i.HasKoEdition,
+			&i.SetTcgdexID,
+			&i.SetName,
+			&i.SpeciesNameKo,
 		); err != nil {
 			return nil, err
 		}

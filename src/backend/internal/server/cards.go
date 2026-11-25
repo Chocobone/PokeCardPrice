@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/labstack/echo/v5"
@@ -23,7 +24,8 @@ const (
 )
 
 type cardHandlers struct {
-	q *dbq.Queries
+	q   *dbq.Queries
+	now func() time.Time
 }
 
 // search 는 GET /cards 카드 검색이다.

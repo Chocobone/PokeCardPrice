@@ -75,3 +75,47 @@ LEFT JOIN fx_rates f
  AND f.rate_date = fxd.on_date
 WHERE v.card_id = ANY(@card_ids::bigint[]) AND src.price_kind = 'sale'
 ORDER BY v.card_id, v.id, src.id;
+
+-- name: GetCardDetail :one
+-- 카드 상세 (#8 GET /cards/{id}). 종 이름은 첫 도감 번호 기준이다.
+SELECT c.id, c.language, c.tcgdex_id, c.name, c.local_id, c.rarity, c.image_url, c.dex_ids, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, s.release_date AS set_release_date,
+       s.logo_url AS set_logo_url, s.card_count AS set_card_count,
+       p.name_ko AS species_name_ko
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species p ON p.dex_id = c.dex_ids[1]
+WHERE c.id = @id;
+
+-- name: ListLinkedCards :many
+-- 한글판 ↔ 일본판 연결 카드 (card_links 양방향). 한글판이면 일본판, 일본판이면 한글판들이다.
+SELECT c.id, c.language, c.tcgdex_id, c.name, c.local_id, c.image_url, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, p.name_ko AS species_name_ko
+FROM card_links l
+JOIN cards c ON c.id = CASE WHEN l.card_id = @card_id THEN l.linked_card_id ELSE l.card_id END
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species p ON p.dex_id = c.dex_ids[1]
+WHERE l.card_id = @card_id OR l.linked_card_id = @card_id
+ORDER BY c.language, s.release_date DESC NULLS LAST, c.tcgdex_id;
+
+-- name: ListCardPriceHistory :many
+-- 카드의 모든 변형 × 판매가 소스의 기간 추이와 직전 환율 (#8 GET /cards/{id}/prices).
+-- 환율 조회 방식은 ListPriceHistoryKRW 와 같다.
+SELECT v.id AS card_variant_id, v.variant, src.code AS source, src.currency,
+       ph.price_date, ph.price, ph.source_updated_at,
+       f.rate_date AS fx_rate_date, f.rate AS fx_rate
+FROM card_variants v
+JOIN price_history ph ON ph.card_variant_id = v.id
+JOIN price_sources src ON src.id = ph.source_id
+LEFT JOIN LATERAL (
+  SELECT f2.rate_date AS on_date FROM fx_rates f2
+  WHERE f2.base_currency = src.currency AND f2.quote_currency = 'KRW'
+    AND f2.provider = @fx_provider AND f2.rate_date <= ph.price_date
+  ORDER BY f2.rate_date DESC
+  LIMIT 1
+) fxd ON true
+LEFT JOIN fx_rates f
+  ON f.base_currency = src.currency AND f.quote_currency = 'KRW' AND f.provider = @fx_provider
+ AND f.rate_date = fxd.on_date
+WHERE v.card_id = @card_id AND ph.price_date >= @from_date AND src.price_kind = 'sale'
+ORDER BY v.id, src.id, ph.price_date;

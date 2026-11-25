@@ -40,16 +40,19 @@ JOIN sets s ON s.language = x.language AND s.tcgdex_id = x.set_id;
 UPDATE cards SET has_ko_edition = true WHERE tcgdex_id = 'SV2a-025';
 INSERT INTO card_links (card_id, linked_card_id, method)
 SELECT k.id, j.id, 'auto' FROM cards k, cards j WHERE k.tcgdex_id = 'SV4K-025' AND j.tcgdex_id = 'SV2a-025';
+-- 변형 id 순서가 VALUES 순서와 같도록 ORDER BY 로 넣는다 (JOIN 결과 순서는 정해져 있지 않다)
 INSERT INTO card_variants (card_id, variant)
 SELECT c.id, x.variant FROM (VALUES
-  ('sv03.5-025', 'normal'), ('sv03.5-025', 'reverse_holofoil'), ('sv03.5-006', 'normal'), ('sv03.5-166', 'normal'),
-  ('base1-58', 'first_edition'), ('SV2a-025', 'normal'), ('SV4K-025', 'normal')
-) AS x(card, variant) JOIN cards c ON c.tcgdex_id = x.card;
+  (1, 'sv03.5-025', 'normal'), (2, 'sv03.5-025', 'reverse_holofoil'), (3, 'sv03.5-006', 'normal'), (4, 'sv03.5-166', 'normal'),
+  (5, 'base1-58', 'first_edition'), (6, 'SV2a-025', 'normal'), (7, 'SV4K-025', 'normal')
+) AS x(ord, card, variant) JOIN cards c ON c.tcgdex_id = x.card
+ORDER BY x.ord;
 INSERT INTO fx_rates (base_currency, quote_currency, rate_date, provider, rate) VALUES
   ('USD', 'KRW', '2026-11-20', 'frankfurter', 1330.00), ('USD', 'KRW', '2026-11-21', 'frankfurter', 1336.65);
 INSERT INTO price_history (card_variant_id, source_id, price_date, price, price_basis, source_updated_at)
 SELECT v.id, src.id, x.d::date, x.price, x.basis, '2026-11-23 20:05:58+00'
 FROM (VALUES
+  ('sv03.5-025', 'normal', 'tcgcsv', '2026-10-20', 2.00, 'market'),
   ('sv03.5-025', 'normal', 'tcgcsv', '2026-11-22', 1.10, 'market'),
   ('sv03.5-025', 'normal', 'tcgcsv', '2026-11-23', 1.23, 'market'),
   ('sv03.5-025', 'reverse_holofoil', 'tcgcsv', '2026-11-23', 5.00, 'market'),
@@ -75,8 +78,11 @@ func testServer(t *testing.T) http.Handler {
 	if _, err := pool.Exec(ctx, fixtureSQL); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	return New(pool, dbq.New(pool))
+	return newRouter(pool, dbq.New(pool), func() time.Time { return testNow })
 }
+
+// testNow 는 테스트 서버의 현재 시각이다 (2026-11-25 10:00 KST). 30d 시작일은 2026-10-26 이다.
+var testNow = time.Date(2026, 11, 25, 1, 0, 0, 0, time.UTC)
 
 func search(t *testing.T, h http.Handler, query string) api.Page[api.CardSummary] {
 	t.Helper()

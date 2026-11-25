@@ -82,6 +82,9 @@ func NewPrice(lp LatestPrice) Price {
 	return p
 }
 
+// SourceRank 는 소스 우선순위 순번이다. 목록에 없으면 가장 뒤이다.
+func SourceRank(source string) int { return rank(SourcePriority, source) }
+
 func rank(list []string, v string) int {
 	for i, s := range list {
 		if s == v {
