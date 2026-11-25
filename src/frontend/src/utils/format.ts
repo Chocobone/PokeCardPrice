@@ -1,7 +1,7 @@
 // 화면 표시용 형식 함수. 금액은 API 에서 문자열로 오므로 표시할 때만 숫자로 바꾼다.
 import type { Currency, Price } from '@/api/types'
 
-const FRACTION: Record<Currency, number> = { USD: 2, JPY: 0, KRW: 0 }
+const FRACTION: Record<Currency, number> = { USD: 2, EUR: 2, KRW: 0 }
 const moneyFormats = new Map<Currency, Intl.NumberFormat>()
 
 function moneyFormat(currency: Currency): Intl.NumberFormat {
@@ -19,7 +19,7 @@ function moneyFormat(currency: Currency): Intl.NumberFormat {
   return f
 }
 
-/** "$135.57", "¥847", "₩12,000". 가격이 없으면 "시세 없음". */
+/** "$135.57", "€12.30", "₩12,000" (소스 통화). 가격이 없으면 "시세 없음". */
 export function formatPrice(price: Price | null | undefined): string {
   if (!price) return '시세 없음'
   const n = Number(price.amount)

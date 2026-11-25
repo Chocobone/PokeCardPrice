@@ -55,7 +55,7 @@
 |----------|------|----|------|
 | `q` | ✅ | 앞뒤 공백을 뺀 1~100자 | - |
 | `lang` | | `en`·`ja`·`ko` | 전체 |
-| `page` | | 1 이상 | 1 |
+| `page` | | 1~10000 | 1 |
 | `size` | | 1~60 | 24 |
 
 - 검색어는 공백으로 나눈 낱말(최대 10개)로 찾고, **모든 낱말이 맞는 카드**만 돌려준다 (예: `sv03.5 25`, `피카츄 ex`). 대소문자는 구분하지 않는다.
@@ -189,10 +189,11 @@ interface MoversResponse {
 
 ### 4. 목업 (`src/frontend/src/api/mock/`)
 
-- `.env.development`의 `VITE_API_MOCK=true`이면 `src/api/cards.ts`가 목업을 쓴다. 화면·스토어는 목업 여부를 모른다. 운영 빌드(`.env.development` 미적용)에서는 목업 코드가 번들에 들어가지 않는다.
+- `.env.development`의 `VITE_API_MOCK=true`이면 `src/api/cards.ts`가 목업을 쓴다. #8 이후 기본값은 `false`(실제 API)이고, 백엔드 없이 화면을 볼 때만 `true`로 바꾼다(Vite 재시작 필요). 화면·스토어는 목업 여부를 모른다. 운영 빌드(`.env.development` 미적용)에서는 목업 코드가 번들에 들어가지 않는다.
+- 목업은 검색·순위·카드 상세·시세 추이 네 함수를 흉내 낸다. 통화는 실제 API처럼 영어판 USD(`tcgcsv`), 일본판 EUR(`tcgdex_cardmarket`)이고 한글판 대표가는 `null`이다. 원화는 고정 환율(USD 1,400·EUR 1,500)로 만든다. 상세는 변형 하나·연결 없음, 추이는 계열 하나다.
 - 응답 지연 300ms, 요청 취소(`AbortSignal`) 지원. 검색어 `__error`는 500 오류를 흉내 낸다.
 - 상황 전환 (개발용): 주소에 `?mock=empty`를 붙이면 모든 목업 응답이 빈 결과, `?mock=error`면 500 오류가 된다. 빈 상태·오류 화면 확인용이다.
-- 호출 수: `globalThis.__mockStats` (`{ search, movers }`). 캐시 동작 확인용이다.
+- 호출 수: `globalThis.__mockStats` (`{ search, movers, card, prices }`). 캐시 동작 확인용이다.
 - 카드 정보는 개발 DB 표본, 가격·변동률은 카드 ID로 만든 임의 값이다(같은 카드는 늘 같은 값). 약 12%의 카드는 시세 없음(`price: null`)으로 둔다.
 
 #### 목업 데이터
@@ -252,7 +253,7 @@ LEFT JOIN pokemon_species p ON p.dex_id = c.dex_ids[1];
 
 ## 적용 방향
 
-- #8: 백엔드가 이 계약대로 응답한다. 5단계에서 `types.ts`·목업을 맞추고 `.env.development`의 `VITE_API_MOCK`을 `false`로 바꿔 실제 API로 전환한다.
+- #8: 백엔드가 이 계약대로 응답한다. `types.ts`·목업을 이 계약에 맞췄고, `.env.development`의 `VITE_API_MOCK`을 `false`로 바꿔 실제 API로 전환했다. 프론트엔드 API 함수: `searchCards`, `getMovers`, `getCard`, `getCardPrices` (`src/api/cards.ts`).
 - #13: 카드 상세 화면은 `CardDetail`·`PriceHistoryResponse`를 쓴다.
 - #7: 한글판 카드의 대표가(현재 `null`)와 일본판 참고가 소스를 더할 때 대표가 규칙(2절)을 갱신한다.
 
