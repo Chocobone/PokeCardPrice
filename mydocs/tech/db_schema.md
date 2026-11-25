@@ -513,6 +513,18 @@ CREATE INDEX cards_dex_ids_idx ON cards USING gin (dex_ids);
 - 두 글자 검색어는 36,756장 전체를 순차 스캔해도 약 10 ms라 문제가 없다.
 - `collection_items`는 `(user_id, card_variant_id, condition)` 유일 제약의 인덱스가 사용자별 조회를 맡는다. 측정에서는 행이 200개라 순차 스캔을 골랐다.
 
+**#8 카드 API 쿼리** (`internal/db/queries/cards.sql`, 측정: `mydocs/working/task_m050_8_stage1.md`·`stage4.md`, 1년치 3,021만 행 복제 DB)
+
+| 쿼리 | 사용 인덱스 | 실행 시간 (캐시 후) |
+|------|-------------|---------------------|
+| `SearchCards` 낱말 검색 (가장 긴 낱말로 후보를 찾고 나머지는 후보에서 확인) | `cards_name_lower_trgm_idx`, `cards_local_number_idx`, `cards_set_id_local_id_key`, `cards_dex_ids_idx` | 대부분 8~48 ms, 1자 검색 120~190 ms |
+| `ListLatestPrices` 카드 24장 변형 × 소스 최신가 + 환율 | `price_history_pkey` 역순, `fx_rates_pkey` 역순 | 2 ms |
+| `ListCardPriceHistory` 카드 1장 1년 추이 + 환율 | `price_history_pkey` 범위 | 17~46 ms (첫 조회 최대 137 ms) |
+| `ListMovers` 급등·급락 (두 날짜를 따로 읽어 해시 조인) | `price_history_source_id_price_date_idx` (Index Only Scan) | 59~91 ms |
+
+- #8에서 `00005_search_indexes.sql`로 `cards_name_lower_trgm_idx`·`cards_local_number_idx`를 더하고, 검색이 쓰지 않게 된 `cards_name_trgm_idx`(대소문자 구분)를 지웠다. 위 S7·S8은 지운 인덱스 기준 측정이다.
+- 이 DB에서는 `lower()`·`ILIKE`로 카드 전체를 훑으면 조건 하나에 약 25~35 ms가 들어, 낱말 배열을 그대로 OR로 묶으면 100 ms를 넘었다.
+
 ### 8. 시세 이력 규모와 형태 확정
 
 **실제 데이터 양 (2026-11-06)**

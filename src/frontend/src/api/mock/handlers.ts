@@ -1,7 +1,8 @@
-// 목업 API. 계약(mydocs/tech/api_contract.md)대로 검색·순위를 흉내 낸다.
+// 목업 API. 계약(mydocs/tech/api_contract.md)대로 검색·순위·카드 상세·시세 추이를 흉내 낸다.
 // 카드 정보는 개발 DB 표본(data.ts), 가격·변동률은 카드 ID 로 만든 임의 값이다.
 import { ApiError } from '../client'
 import type {
+  CardDetail,
   CardSummary,
   Currency,
   Language,
@@ -9,7 +10,10 @@ import type {
   MoversParams,
   MoversResponse,
   Page,
+  Period,
   Price,
+  PriceHistoryResponse,
+  PricePoint,
   SearchParams,
 } from '../types'
 import { MOCK_CARDS, type MockCard } from './data'
@@ -21,7 +25,7 @@ const AS_OF = '2026-11-16'
 const PREV_DAYS: Record<MoversParams['period'], number> = { '7d': 7, '30d': 30 }
 
 /** 목업 호출 수 (개발 확인용). */
-export const mockStats = { search: 0, movers: 0 }
+export const mockStats = { search: 0, movers: 0, card: 0, prices: 0 }
 // 개발 확인 도구(헤드리스 브라우저)가 모듈 경로와 상관없이 읽을 수 있게 전역에도 둔다.
 Object.assign(globalThis, { __mockStats: mockStats })
 
@@ -42,26 +46,36 @@ function rand(seed: number): number {
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296
 }
 
-const CURRENCY: Record<Language, Currency> = { en: 'USD', ja: 'JPY', ko: 'KRW' }
-const SOURCE: Record<Language, string> = { en: 'tcgcsv', ja: 'mock_jp', ko: 'mock_kr' }
+// 실제 API 와 같이 영어판은 TCGCSV(USD), 일본판은 Cardmarket(EUR), 한글판은 대표가 없음(#7)으로 흉내 낸다.
+const CURRENCY: Record<Language, Currency> = { en: 'USD', ja: 'EUR', ko: 'KRW' }
+const SOURCE: Record<Language, string> = { en: 'tcgcsv', ja: 'tcgdex_cardmarket', ko: 'mock_kr' }
+const KRW_RATE: Record<Currency, number> = { USD: 1400, EUR: 1500, KRW: 1 }
+
+function dateBefore(daysAgo: number): string {
+  const d = new Date(`${AS_OF}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() - daysAgo)
+  return d.toISOString().slice(0, 10)
+}
 
 function priceOf(card: MockCard, daysAgo: number, amount: number): Price {
   const currency = CURRENCY[card.language]
-  const d = new Date(`${AS_OF}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() - daysAgo)
+  const date = dateBefore(daysAgo)
   return {
-    amount: currency === 'USD' ? amount.toFixed(2) : Math.round(amount).toString(),
+    amount: currency === 'KRW' ? Math.round(amount).toString() : amount.toFixed(2),
     currency,
     source: SOURCE[card.language],
-    date: d.toISOString().slice(0, 10),
+    date,
+    krw: Math.round(amount * KRW_RATE[currency]).toString(),
+    fxDate: currency === 'KRW' ? null : date,
+    updatedAt: null,
   }
 }
 
-/** 카드의 현재 대표가. 일부 카드는 시세가 없다 (null). */
+/** 카드의 현재 대표가. 한글판과 일부 카드는 시세가 없다 (null). */
 function baseAmount(card: MockCard): number | null {
-  if (rand(card.id) < 0.12) return null
+  if (card.language === 'ko' || rand(card.id) < 0.12) return null
   const usd = 0.25 + rand(card.id * 7) ** 3 * 400
-  return { USD: usd, JPY: usd * 150, KRW: usd * 1400 }[CURRENCY[card.language]]
+  return { USD: usd, EUR: usd * 0.9, KRW: usd * 1400 }[CURRENCY[card.language]]
 }
 
 function withPrice(card: MockCard): CardSummary {
@@ -148,4 +162,64 @@ export async function getMovers(params: MoversParams, signal?: AbortSignal): Pro
     .sort((a, b) => sign * (b.changeRate - a.changeRate))
     .slice(0, limit)
   return { period: params.period, direction: params.direction, asOf: AS_OF, items }
+}
+
+function findCard(id: number): MockCard {
+  const card = MOCK_CARDS.find((c) => c.id === id)
+  if (!card || scenario() === 'empty') throw new ApiError(404, 'not_found', '카드를 찾을 수 없습니다')
+  return card
+}
+
+/** 카드 상세. 변형은 하나(normal), 연결 카드는 없다. */
+export async function getCard(id: number, signal?: AbortSignal): Promise<CardDetail> {
+  await delay(signal)
+  mockStats.card++
+  if (scenario() === 'error') throw new ApiError(500, 'internal', '목업 서버 오류')
+  const card = findCard(id)
+  const summary = withPrice(card)
+  return {
+    ...summary,
+    set: { ...card.set, releaseDate: null, logoUrl: null, cardCount: null },
+    rarity: null,
+    dexIds: [],
+    linked: [],
+    variants: [{ variant: 'normal', prices: summary.price ? [summary.price] : [] }],
+  }
+}
+
+const PERIOD_DAYS: Record<Period, number> = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 }
+
+/** 시세 추이. 대표가 변형 하나·소스 하나의 날짜별 임의 가격이다. */
+export async function getCardPrices(id: number, period: Period, signal?: AbortSignal): Promise<PriceHistoryResponse> {
+  await delay(signal)
+  mockStats.prices++
+  if (scenario() === 'error') throw new ApiError(500, 'internal', '목업 서버 오류')
+  const card = findCard(id)
+  const days = PERIOD_DAYS[period]
+  const base = baseAmount(card)
+  const res: PriceHistoryResponse = { cardId: id, period, from: dateBefore(days), series: [] }
+  if (base === null) return res
+  const prices: Price[] = []
+  for (let i = days; i >= 0; i--) prices.push(priceOf(card, i, base * (0.8 + rand(card.id * 13 + i) * 0.4)))
+  const firstPrice = prices[0]
+  const lastPrice = prices.at(-1)
+  if (!firstPrice || !lastPrice) return res
+  const amounts = prices.map((p) => Number(p.amount))
+  const first = Number(firstPrice.amount)
+  const last = Number(lastPrice.amount)
+  res.series.push({
+    variant: 'normal',
+    source: SOURCE[card.language],
+    currency: CURRENCY[card.language],
+    points: prices.map((p): PricePoint => ({ date: p.date, amount: p.amount, krw: p.krw })),
+    summary: {
+      current: lastPrice,
+      average: (amounts.reduce((a, b) => a + b, 0) / amounts.length).toFixed(2),
+      min: Math.min(...amounts).toFixed(2),
+      max: Math.max(...amounts).toFixed(2),
+      changeRate: first > 0 ? Math.round(((last - first) / first) * 1e6) / 1e6 : null,
+      from: firstPrice.date,
+    },
+  })
+  return res
 }

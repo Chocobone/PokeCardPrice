@@ -33,7 +33,7 @@
 | `router/index.ts` | 라우트, 탭 제목(`meta.title`), 스크롤 복원 |
 | `api/types.ts` | API 계약 타입 (`mydocs/tech/api_contract.md`와 같아야 함) |
 | `api/client.ts` | `apiGet`, `ApiError`, `errorMessage`, `isAbortError` |
-| `api/cards.ts` | 엔드포인트 함수 (`searchCards`, `getMovers`). 목업 전환 지점 |
+| `api/cards.ts` | 엔드포인트 함수 (`searchCards`, `getMovers`, `getCard`, `getCardPrices`). 목업 전환 지점 |
 | `api/mock/` | 목업 (`handlers.ts`, 자동 생성 `data.ts`) |
 | `stores/` | Pinia 스토어 (`movers.ts`, `search.ts`) |
 | `views/` | 라우트 화면 |
@@ -65,7 +65,7 @@
 
 - 모든 호출은 `/api` 기준이다. 개발 서버는 Vite 프록시가 `/api`를 떼어 `BACKEND_URL`로 넘긴다. 배포 구성(#16)에서 같은 규칙을 맞춘다.
 - 오류는 `ApiError(status, code, message)`. `status 0`은 연결 실패(`network`)·시간 초과(`timeout`, 기본 10초).
-- 목업: `src/frontend/.env.development`의 `VITE_API_MOCK=true`. 화면·스토어는 목업 여부를 모른다. 운영 빌드에는 목업 코드가 들어가지 않는다 (#12 3단계 확인).
+- 목업: `src/frontend/.env.development`의 `VITE_API_MOCK=true`. #8 이후 기본값은 `false`(실제 API, Vite 프록시 → 백엔드)이고, 백엔드 없이 화면을 볼 때만 `true`로 바꾼다(프론트엔드 재시작 필요). 화면·스토어는 목업 여부를 모른다. 운영 빌드에는 목업 코드가 들어가지 않는다 (#12 3단계 확인).
 - 목업 개발 도구: `?mock=empty`·`?mock=error`(빈 결과·오류 화면 확인), 검색어 `__error`, `globalThis.__mockStats`(호출 수). 자세한 내용은 `api_contract.md` 4절.
 
 ### 6. 스타일 규칙
@@ -98,7 +98,7 @@ docker compose exec frontend npm run build       # 타입 검사 + 운영 빌드
 
 | 타스크 | 인계 사항 |
 |--------|-----------|
-| #8 | `api_contract.md`대로 구현. 완료 후 `.env.development`의 `VITE_API_MOCK=false` |
+| #8 | `api_contract.md`대로 구현, `VITE_API_MOCK=false`로 전환 (완료) |
 | #13 | `/cards/:id` 자리 화면(`CardPlaceholderView.vue`)을 교체. `CardImage size="high"`, `LangBadge`, `formatPrice` 재사용. 카드 상세 API 계약은 `api_contract.md`에 추가 |
 | #14 | 라우트 `/login`, `/collection` 추가, 헤더에 메뉴 자리 |
 | #15 | 단위 테스트 도구 결정 (스토어·`format.ts`·`PageNav` 계산이 우선 대상) |

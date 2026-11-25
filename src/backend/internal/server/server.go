@@ -1,15 +1,17 @@
 // Package server 는 HTTP 라우팅과 핸들러를 구성한다.
+// 응답 형식은 mydocs/tech/api_contract.md 를 따른다.
 package server
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/labstack/echo/v5"
 	"github.com/labstack/echo/v5/middleware"
+
+	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db/dbq"
 )
 
 // Pinger 는 /healthz 가 확인하는 DB 상태이다. *pgxpool.Pool 이 만족한다.
@@ -17,14 +19,25 @@ type Pinger interface {
 	Ping(ctx context.Context) error
 }
 
-// New 는 API 라우터를 반환한다.
-func New(db Pinger) http.Handler {
+// New 는 API 라우터를 반환한다. q 는 카드 API 가 쓰는 쿼리이다 (읽기 전용).
+func New(db Pinger, q *dbq.Queries) http.Handler {
+	return newRouter(db, q, time.Now)
+}
+
+// newRouter 는 New 와 같고, 시세 기간 계산에 쓸 현재 시각을 바꿀 수 있다 (테스트용).
+func newRouter(db Pinger, q *dbq.Queries, now func() time.Time) http.Handler {
 	e := echo.New()
 	e.HTTPErrorHandler = errorHandler
 	e.Use(middleware.RequestLogger())
 	e.Use(middleware.Recover())
 
 	e.GET("/healthz", healthz(db))
+
+	h := &cardHandlers{q: q, now: now}
+	e.GET("/cards", h.search)
+	e.GET("/cards/:id", h.detail)
+	e.GET("/cards/:id/prices", h.prices)
+	e.GET("/rankings/movers", h.movers)
 	return e
 }
 
@@ -39,28 +52,4 @@ func healthz(db Pinger) echo.HandlerFunc {
 		}
 		return c.JSON(http.StatusOK, map[string]string{"status": "ok", "db": "ok"})
 	}
-}
-
-// errorHandler 는 모든 오류를 {"error": "..."} 형식으로 응답한다.
-func errorHandler(c *echo.Context, err error) {
-	// RequestLogger 가 오류 처리기를 먼저 호출하므로, 이미 응답했으면 다시 쓰지 않는다.
-	if r, _ := echo.UnwrapResponse(c.Response()); r != nil && r.Committed {
-		return
-	}
-	code, msg := http.StatusInternalServerError, "internal error"
-	var he *echo.HTTPError
-	var sc echo.HTTPStatusCoder
-	switch {
-	case errors.As(err, &he):
-		code, msg = he.Code, he.Message
-		if msg == "" {
-			msg = http.StatusText(code)
-		}
-	case errors.As(err, &sc):
-		code, msg = sc.StatusCode(), http.StatusText(sc.StatusCode())
-	}
-	if code >= http.StatusInternalServerError {
-		slog.Error("request error", "err", err, "path", c.Request().URL.Path)
-	}
-	_ = c.JSON(code, map[string]string{"error": msg})
 }

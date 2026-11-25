@@ -1,8 +1,10 @@
 // API 계약 타입. mydocs/tech/api_contract.md 와 같아야 한다 (#8 이 이 형식으로 구현한다).
 
 export type Language = 'en' | 'ja' | 'ko'
-export type Currency = 'USD' | 'JPY' | 'KRW'
+export type Currency = 'USD' | 'EUR' | 'KRW'
 export type MoverPeriod = '7d' | '30d'
+/** 시세 추이 기간 */
+export type Period = '7d' | '30d' | '90d' | '1y'
 export type MoverDirection = 'up' | 'down'
 
 export interface SetRef {
@@ -19,6 +21,12 @@ export interface Price {
   source: string
   /** 가격 기준일 (YYYY-MM-DD) */
   date: string
+  /** 원화 환산 (원 단위 정수 문자열, 예: "16602"). 환율이 없으면 null */
+  krw: string | null
+  /** 환산에 쓴 환율 날짜 (YYYY-MM-DD). 환율이 없으면 null */
+  fxDate: string | null
+  /** 소스 갱신 시각 (RFC 3339). 오래된 가격 판단용 */
+  updatedAt: string | null
 }
 
 export interface CardSummary {
@@ -39,6 +47,67 @@ export interface CardSummary {
   speciesNameKo: string | null
   /** 대표가. 시세가 없으면 null */
   price: Price | null
+}
+
+export interface SetDetail extends SetRef {
+  releaseDate: string | null
+  logoUrl: string | null
+  cardCount: number | null
+}
+
+export interface VariantPrices {
+  /** card_variants.variant */
+  variant: string
+  /** 소스별 최신가. 소스 우선순위(TCGCSV → Cardmarket) 순. 시세가 없으면 [] */
+  prices: Price[]
+}
+
+/** GET /cards/{id} (#13 카드 상세 화면에서 쓴다) */
+export interface CardDetail extends Omit<CardSummary, 'set'> {
+  set: SetDetail
+  rarity: string | null
+  /** 도감 번호. 트레이너스·에너지는 [] */
+  dexIds: number[]
+  /** 한글판 ↔ 일본판 연결 카드 */
+  linked: CardSummary[]
+  /** 변형 id 순 */
+  variants: VariantPrices[]
+}
+
+export interface PricePoint {
+  date: string
+  amount: string
+  krw: string | null
+}
+
+export interface PriceSeries {
+  variant: string
+  source: string
+  currency: Currency
+  /** 날짜 오름차순 */
+  points: PricePoint[]
+  summary: {
+    /** 기간 안 마지막 가격 */
+    current: Price
+    /** 날짜별 가격의 산술 평균 (소수 둘째 자리) */
+    average: string
+    min: string
+    max: string
+    /** (마지막 - 첫) / 첫. 가격이 하나뿐이거나 첫 가격이 0이면 null */
+    changeRate: number | null
+    /** 기간 안 첫 가격의 날짜 */
+    from: string
+  }
+}
+
+/** GET /cards/{id}/prices (#13 카드 상세 화면에서 쓴다) */
+export interface PriceHistoryResponse {
+  cardId: number
+  period: Period
+  /** 요청 시작일 (오늘 KST - 기간) */
+  from: string
+  /** 변형 id 순 → 소스 우선순위 순 */
+  series: PriceSeries[]
 }
 
 export interface Page<T> {

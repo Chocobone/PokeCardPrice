@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db"
+	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db/dbq"
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/server"
 )
 
@@ -45,7 +46,7 @@ func run() error {
 	}
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           server.New(pool),
+		Handler:           server.New(pool, dbq.New(pool)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

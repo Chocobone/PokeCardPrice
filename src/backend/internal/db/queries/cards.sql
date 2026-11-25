@@ -1,0 +1,167 @@
+-- 카드 검색·시세 조회 API(#8) 쿼리. 규칙: mydocs/tech/api_contract.md, 측정: mydocs/working/task_m050_8_stage1.md
+
+-- name: SearchCards :many
+-- 모든 낱말이 맞는 카드를 찾는다. 낱말이 맞는 조건은 카드 이름·세트 이름 부분 일치, 세트 ID·카드 번호(앞 0 무시) 일치,
+-- 한글 종 이름 부분 일치(도감 번호) 중 하나이다.
+-- terms 는 소문자 낱말, key_term 은 그중 후보를 찾을 낱말(가장 긴 것), key_pattern 은 key_term 을 LIKE 용으로 감싼 값,
+-- query 는 낱말을 공백 하나로 이은 전체 검색어이다. language 가 '' 이면 모든 언어.
+-- 정렬: ① 세트 ID·번호가 낱말과 같음 ② 이름이 검색어로 시작하거나 첫 도감 번호의 한글 종 이름이 낱말과 같음 ③ 나머지,
+-- 그 안에서 세트 발매일 최신순 → 세트 ID → 번호.
+WITH t AS (
+  SELECT term, ltrim(term, '0') AS num,
+         (SELECT coalesce(array_agg(ps.dex_id), '{}')::int[] FROM pokemon_species ps WHERE strpos(ps.name_ko, term) > 0) AS dex,
+         (SELECT coalesce(array_agg(st.id), '{}')::bigint[] FROM sets st WHERE strpos(lower(st.name), term) > 0 OR lower(st.tcgdex_id) = term) AS set_ids
+  FROM unnest(@terms::text[]) AS term
+),
+k AS (SELECT * FROM t WHERE t.term = @key_term::text),
+cand AS (
+  SELECT c1.id FROM cards c1, k WHERE lower(c1.name) LIKE @key_pattern::text
+  UNION SELECT c2.id FROM cards c2, k WHERE c2.set_id = ANY(k.set_ids)
+  UNION SELECT c3.id FROM cards c3, k WHERE k.num <> '' AND ltrim(c3.local_id, '0') = k.num
+  UNION SELECT c4.id FROM cards c4, k WHERE c4.dex_ids && k.dex
+)
+SELECT c.id, c.language, c.tcgdex_id, c.name, c.local_id, c.image_url, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, p.name_ko AS species_name_ko,
+       count(*) OVER () AS total
+FROM cand
+JOIN cards c ON c.id = cand.id
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species p ON p.dex_id = c.dex_ids[1]
+WHERE (@language::text = '' OR c.language = @language::text)
+  AND NOT EXISTS (
+    SELECT 1 FROM t
+    WHERE NOT (
+      strpos(lower(c.name), t.term) > 0
+      OR c.set_id = ANY(t.set_ids)
+      OR (t.num <> '' AND ltrim(c.local_id, '0') = t.num)
+      -- 트레이너스·에너지는 dex_ids 가 NULL 이다. NULL 이 NOT 을 거쳐 '맞음'이 되지 않게 막는다.
+      OR coalesce(c.dex_ids && t.dex, false)
+    )
+  )
+ORDER BY
+  CASE
+    WHEN EXISTS (SELECT 1 FROM t WHERE lower(s.tcgdex_id) = t.term OR (t.num <> '' AND ltrim(c.local_id, '0') = t.num)) THEN 0
+    WHEN strpos(lower(c.name), @query::text) = 1 OR EXISTS (SELECT 1 FROM t WHERE p.name_ko = t.term) THEN 1
+    ELSE 2
+  END,
+  s.release_date DESC NULLS LAST, s.tcgdex_id, c.local_id
+LIMIT @lim OFFSET @off;
+
+-- name: ListLatestPrices :many
+-- 카드들의 변형 × 판매가 소스별 최신가와 원화 환산용 직전 환율 (대표가·카드 상세).
+-- 최신 날짜는 LATERAL(기본 키 역순 스캔)로 구하고 값은 기본 키로 다시 읽는다.
+-- LATERAL 결과 열은 sqlc 가 NULL 불가로 만들어서, NULL 이 될 수 있는 열은 테이블 JOIN 으로 가져온다 (ListPriceHistoryKRW 와 같은 방식).
+SELECT v.card_id, v.id AS card_variant_id, v.variant, src.code AS source, src.currency,
+       ph.price_date, ph.price, ph.source_updated_at,
+       f.rate_date AS fx_rate_date, f.rate AS fx_rate
+FROM card_variants v
+CROSS JOIN price_sources src
+JOIN LATERAL (
+  SELECT p2.price_date AS on_date FROM price_history p2
+  WHERE p2.card_variant_id = v.id AND p2.source_id = src.id
+  ORDER BY p2.price_date DESC
+  LIMIT 1
+) latest ON true
+JOIN price_history ph ON ph.card_variant_id = v.id AND ph.source_id = src.id AND ph.price_date = latest.on_date
+LEFT JOIN LATERAL (
+  SELECT f2.rate_date AS on_date FROM fx_rates f2
+  WHERE f2.base_currency = src.currency AND f2.quote_currency = 'KRW'
+    AND f2.provider = @fx_provider AND f2.rate_date <= ph.price_date
+  ORDER BY f2.rate_date DESC
+  LIMIT 1
+) fxd ON true
+LEFT JOIN fx_rates f
+  ON f.base_currency = src.currency AND f.quote_currency = 'KRW' AND f.provider = @fx_provider
+ AND f.rate_date = fxd.on_date
+WHERE v.card_id = ANY(@card_ids::bigint[]) AND src.price_kind = 'sale'
+ORDER BY v.card_id, v.id, src.id;
+
+-- name: GetCardDetail :one
+-- 카드 상세 (#8 GET /cards/{id}). 종 이름은 첫 도감 번호 기준이다.
+SELECT c.id, c.language, c.tcgdex_id, c.name, c.local_id, c.rarity, c.image_url, c.dex_ids, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, s.release_date AS set_release_date,
+       s.logo_url AS set_logo_url, s.card_count AS set_card_count,
+       p.name_ko AS species_name_ko
+FROM cards c
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species p ON p.dex_id = c.dex_ids[1]
+WHERE c.id = @id;
+
+-- name: ListLinkedCards :many
+-- 한글판 ↔ 일본판 연결 카드 (card_links 양방향). 한글판이면 일본판, 일본판이면 한글판들이다.
+SELECT c.id, c.language, c.tcgdex_id, c.name, c.local_id, c.image_url, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, p.name_ko AS species_name_ko
+FROM card_links l
+JOIN cards c ON c.id = CASE WHEN l.card_id = @card_id THEN l.linked_card_id ELSE l.card_id END
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species p ON p.dex_id = c.dex_ids[1]
+WHERE l.card_id = @card_id OR l.linked_card_id = @card_id
+ORDER BY c.language, s.release_date DESC NULLS LAST, c.tcgdex_id;
+
+-- name: ListCardPriceHistory :many
+-- 카드의 모든 변형 × 판매가 소스의 기간 추이와 직전 환율 (#8 GET /cards/{id}/prices).
+-- 환율 조회 방식은 ListPriceHistoryKRW 와 같다.
+SELECT v.id AS card_variant_id, v.variant, src.code AS source, src.currency,
+       ph.price_date, ph.price, ph.source_updated_at,
+       f.rate_date AS fx_rate_date, f.rate AS fx_rate
+FROM card_variants v
+JOIN price_history ph ON ph.card_variant_id = v.id
+JOIN price_sources src ON src.id = ph.source_id
+LEFT JOIN LATERAL (
+  SELECT f2.rate_date AS on_date FROM fx_rates f2
+  WHERE f2.base_currency = src.currency AND f2.quote_currency = 'KRW'
+    AND f2.provider = @fx_provider AND f2.rate_date <= ph.price_date
+  ORDER BY f2.rate_date DESC
+  LIMIT 1
+) fxd ON true
+LEFT JOIN fx_rates f
+  ON f.base_currency = src.currency AND f.quote_currency = 'KRW' AND f.provider = @fx_provider
+ AND f.rate_date = fxd.on_date
+WHERE v.card_id = @card_id AND ph.price_date >= @from_date AND src.price_kind = 'sale'
+ORDER BY v.id, src.id, ph.price_date;
+
+-- name: GetLatestPriceDate :one
+-- 소스의 가격 기준일 중 on_or_before 이하 가장 늦은 날 (#8 순위 기준일·비교일). 없으면 행이 없다.
+SELECT price_date FROM price_history
+WHERE source_id = @source_id AND price_date <= @on_or_before
+ORDER BY price_date DESC
+LIMIT 1;
+
+-- name: ListMovers :many
+-- 급등·급락 순위 (#8 Q3, 1단계 확정 안 c). 기준일·비교일 가격이 모두 min_price 이상인 변형의 변동률로 순위를 낸다.
+-- 같은 카드는 변동률이 가장 큰(하락은 가장 작은) 변형 하나만. up 이면 0보다 큰 것만 큰 순, 아니면 0보다 작은 것만 작은 순.
+-- 두 날짜의 행을 보조 인덱스(Index Only Scan)로 따로 읽어 해시 조인하도록 MATERIALIZED 로 나눈다.
+WITH cur AS MATERIALIZED (
+  SELECT p.card_variant_id, p.price FROM price_history p
+  WHERE p.source_id = @source_id AND p.price_date = @as_of AND p.price >= @min_price
+), prev AS MATERIALIZED (
+  SELECT p.card_variant_id, p.price FROM price_history p
+  WHERE p.source_id = @source_id AND p.price_date = @compare_on AND p.price >= @min_price
+), r AS (
+  SELECT v.card_id, cur.card_variant_id, cur.price AS cur_price, prev.price AS prev_price,
+         (cur.price - prev.price) / prev.price AS rate
+  FROM cur
+  JOIN prev ON prev.card_variant_id = cur.card_variant_id
+  JOIN card_variants v ON v.id = cur.card_variant_id
+), best AS (
+  SELECT DISTINCT ON (r.card_id) r.card_id, r.card_variant_id, r.cur_price, r.prev_price, r.rate
+  FROM r
+  WHERE CASE WHEN @up::boolean THEN r.rate > 0 ELSE r.rate < 0 END
+  ORDER BY r.card_id, CASE WHEN @up::boolean THEN r.rate END DESC, CASE WHEN NOT @up::boolean THEN r.rate END, r.card_variant_id
+), top AS (
+  SELECT * FROM best
+  ORDER BY CASE WHEN @up::boolean THEN best.rate END DESC, CASE WHEN NOT @up::boolean THEN best.rate END, best.card_id
+  LIMIT @lim
+)
+SELECT top.card_id, top.card_variant_id, v.variant, top.cur_price, top.prev_price,
+       cp.source_updated_at AS cur_updated_at, pp.source_updated_at AS prev_updated_at,
+       c.language, c.tcgdex_id, c.name, c.local_id, c.image_url, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, sp.name_ko AS species_name_ko
+FROM top
+JOIN card_variants v ON v.id = top.card_variant_id
+JOIN price_history cp ON cp.card_variant_id = top.card_variant_id AND cp.source_id = @source_id AND cp.price_date = @as_of
+JOIN price_history pp ON pp.card_variant_id = top.card_variant_id AND pp.source_id = @source_id AND pp.price_date = @compare_on
+JOIN cards c ON c.id = top.card_id
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species sp ON sp.dex_id = c.dex_ids[1]
+ORDER BY CASE WHEN @up::boolean THEN top.rate END DESC, CASE WHEN NOT @up::boolean THEN top.rate END, top.card_id;
