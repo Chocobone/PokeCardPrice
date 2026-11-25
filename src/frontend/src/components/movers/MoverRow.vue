@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import type { Mover } from '@/api/types'
 import CardImage from '@/components/common/CardImage.vue'
 import LangBadge from '@/components/common/LangBadge.vue'
-import { changeDirection, formatChangeRate, formatPrice } from '@/utils/format'
+import { changeDirection, formatChangeRate, formatKrw, formatPrice } from '@/utils/format'
 
 const props = defineProps<{ rank: number; mover: Mover }>()
 const dir = computed(() => changeDirection(props.mover.changeRate))
@@ -33,7 +33,10 @@ const dir = computed(() => changeDirection(props.mover.changeRate))
         </span>
       </span>
       <span class="price">
-        <span class="current">{{ formatPrice(mover.current) }}</span>
+        <span class="current">{{ formatPrice(mover.current) }}<small
+          v-if="formatKrw(mover.current.krw)"
+          class="krw"
+        > ≈{{ formatKrw(mover.current.krw) }}</small></span>
         <span
           class="change"
           :class="dir"
@@ -106,6 +109,12 @@ const dir = computed(() => changeDirection(props.mover.changeRate))
 
 .current {
   font-weight: 600;
+}
+
+.krw {
+  font-size: 0.8em;
+  font-weight: 400;
+  color: var(--color-text-muted);
 }
 
 .change {

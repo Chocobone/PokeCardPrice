@@ -3,9 +3,13 @@ import { computed, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import CardHeader from '@/components/card-detail/CardHeader.vue'
+import LinkedCards from '@/components/card-detail/LinkedCards.vue'
+import PriceHeadline from '@/components/card-detail/PriceHeadline.vue'
+import PriceTable from '@/components/card-detail/PriceTable.vue'
 import StateView from '@/components/common/StateView.vue'
 import { SITE_NAME } from '@/router'
 import { useCardDetailStore } from '@/stores/cardDetail'
+import { hasAnyPrice, representativeVariant } from '@/utils/cardPrice'
 
 // 카드 상세 화면 (/cards/:id). 카드를 바꾸면(같은 화면에서 id 만 바뀜) 이전 카드의 요청을 취소한다.
 const route = useRoute()
@@ -71,7 +75,23 @@ watch(
       @retry="retry"
     />
     <template v-else-if="card">
-      <CardHeader :card="card" />
+      <CardHeader :card="card">
+        <PriceHeadline
+          :price="card.price"
+          :variant="representativeVariant(card)"
+          :language="card.language"
+        />
+      </CardHeader>
+      <PriceTable
+        v-if="hasAnyPrice(card)"
+        :variants="card.variants"
+        :representative="card.price"
+      />
+      <LinkedCards
+        v-if="card.linked.length"
+        :language="card.language"
+        :cards="card.linked"
+      />
     </template>
     <StateView
       v-else-if="loading"

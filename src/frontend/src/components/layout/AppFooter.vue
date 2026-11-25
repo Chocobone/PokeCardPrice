@@ -12,9 +12,27 @@
           target="_blank"
           rel="noopener"
         >PokéAPI</a>
+        · 가격: <a
+          href="https://www.tcgplayer.com"
+          target="_blank"
+          rel="noopener"
+        >TCGplayer</a> (<a
+          href="https://tcgcsv.com"
+          target="_blank"
+          rel="noopener"
+        >TCGCSV</a> 경유) · <a
+          href="https://www.cardmarket.com"
+          target="_blank"
+          rel="noopener"
+        >Cardmarket</a> (TCGdex 경유)
+        · 환율: <a
+          href="https://frankfurter.dev"
+          target="_blank"
+          rel="noopener"
+        >Frankfurter</a>
       </p>
       <p class="muted">
-        시세는 참고용이며 실제 거래가와 다를 수 있습니다.
+        시세는 참고용이며 실제 거래가와 다를 수 있습니다. 원화는 환율로 환산한 참고값입니다.
         Pokémon 및 관련 명칭은 Nintendo, Creatures, GAME FREAK, The Pokémon Company 의 상표입니다.
         이 사이트는 이들과 관련이 없습니다.
       </p>

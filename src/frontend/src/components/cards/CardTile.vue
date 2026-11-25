@@ -4,7 +4,7 @@ import { computed } from 'vue'
 import type { CardSummary } from '@/api/types'
 import CardImage from '@/components/common/CardImage.vue'
 import LangBadge from '@/components/common/LangBadge.vue'
-import { formatPrice } from '@/utils/format'
+import { formatKrw, formatPrice } from '@/utils/format'
 
 const props = defineProps<{ card: CardSummary }>()
 
@@ -39,7 +39,10 @@ const species = computed(() => {
         <span
           class="price"
           :class="{ none: !card.price }"
-        >{{ formatPrice(card.price) }}</span>
+        >{{ formatPrice(card.price) }}<small
+          v-if="formatKrw(card.price?.krw)"
+          class="krw"
+        > ≈{{ formatKrw(card.price?.krw) }}</small></span>
       </span>
     </RouterLink>
   </li>
@@ -95,6 +98,12 @@ const species = computed(() => {
   margin-top: var(--space-1);
   font-weight: 700;
   font-variant-numeric: tabular-nums;
+}
+
+.krw {
+  font-size: 0.8em;
+  font-weight: 400;
+  color: var(--color-text-muted);
 }
 
 .price.none {
