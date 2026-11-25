@@ -37,6 +37,7 @@ func newRouter(db Pinger, q *dbq.Queries, now func() time.Time) http.Handler {
 	e.GET("/cards", h.search)
 	e.GET("/cards/:id", h.detail)
 	e.GET("/cards/:id/prices", h.prices)
+	e.GET("/rankings/movers", h.movers)
 	return e
 }
 

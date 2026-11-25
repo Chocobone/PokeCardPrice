@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/api"
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db"
 	"github.com/Chocobone/PokeCardPrice/src/backend/internal/db/dbq"
@@ -69,6 +71,13 @@ JOIN price_sources src ON src.code = x.source;
 // testServer 는 마이그레이션과 고정 데이터를 넣은 테스트 DB 로 서버를 만든다.
 func testServer(t *testing.T) http.Handler {
 	t.Helper()
+	h, _ := testServerPool(t)
+	return h
+}
+
+// testServerPool 은 testServer 와 같고, 데이터를 더 넣을 수 있게 DB 풀도 돌려준다.
+func testServerPool(t *testing.T) (http.Handler, *pgxpool.Pool) {
+	t.Helper()
 	pool := dbtest.Pool(t, "server")
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
@@ -78,7 +87,7 @@ func testServer(t *testing.T) http.Handler {
 	if _, err := pool.Exec(ctx, fixtureSQL); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	return newRouter(pool, dbq.New(pool), func() time.Time { return testNow })
+	return newRouter(pool, dbq.New(pool), func() time.Time { return testNow }), pool
 }
 
 // testNow 는 테스트 서버의 현재 시각이다 (2026-11-25 10:00 KST). 30d 시작일은 2026-10-26 이다.

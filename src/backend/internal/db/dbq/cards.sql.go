@@ -65,6 +65,26 @@ func (q *Queries) GetCardDetail(ctx context.Context, id int64) (GetCardDetailRow
 	return i, err
 }
 
+const getLatestPriceDate = `-- name: GetLatestPriceDate :one
+SELECT price_date FROM price_history
+WHERE source_id = $1 AND price_date <= $2
+ORDER BY price_date DESC
+LIMIT 1
+`
+
+type GetLatestPriceDateParams struct {
+	SourceID   int16
+	OnOrBefore time.Time
+}
+
+// 소스의 가격 기준일 중 on_or_before 이하 가장 늦은 날 (#8 순위 기준일·비교일). 없으면 행이 없다.
+func (q *Queries) GetLatestPriceDate(ctx context.Context, arg GetLatestPriceDateParams) (time.Time, error) {
+	row := q.db.QueryRow(ctx, getLatestPriceDate, arg.SourceID, arg.OnOrBefore)
+	var price_date time.Time
+	err := row.Scan(&price_date)
+	return price_date, err
+}
+
 const listCardPriceHistory = `-- name: ListCardPriceHistory :many
 SELECT v.id AS card_variant_id, v.variant, src.code AS source, src.currency,
        ph.price_date, ph.price, ph.source_updated_at,
@@ -251,6 +271,118 @@ func (q *Queries) ListLinkedCards(ctx context.Context, cardID int64) ([]ListLink
 		var i ListLinkedCardsRow
 		if err := rows.Scan(
 			&i.ID,
+			&i.Language,
+			&i.TcgdexID,
+			&i.Name,
+			&i.LocalID,
+			&i.ImageUrl,
+			&i.HasKoEdition,
+			&i.SetTcgdexID,
+			&i.SetName,
+			&i.SpeciesNameKo,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMovers = `-- name: ListMovers :many
+WITH cur AS MATERIALIZED (
+  SELECT p.card_variant_id, p.price FROM price_history p
+  WHERE p.source_id = $1 AND p.price_date = $2 AND p.price >= $5
+), prev AS MATERIALIZED (
+  SELECT p.card_variant_id, p.price FROM price_history p
+  WHERE p.source_id = $1 AND p.price_date = $3 AND p.price >= $5
+), r AS (
+  SELECT v.card_id, cur.card_variant_id, cur.price AS cur_price, prev.price AS prev_price,
+         (cur.price - prev.price) / prev.price AS rate
+  FROM cur
+  JOIN prev ON prev.card_variant_id = cur.card_variant_id
+  JOIN card_variants v ON v.id = cur.card_variant_id
+), best AS (
+  SELECT DISTINCT ON (r.card_id) r.card_id, r.card_variant_id, r.cur_price, r.prev_price, r.rate
+  FROM r
+  WHERE CASE WHEN $4::boolean THEN r.rate > 0 ELSE r.rate < 0 END
+  ORDER BY r.card_id, CASE WHEN $4::boolean THEN r.rate END DESC, CASE WHEN NOT $4::boolean THEN r.rate END, r.card_variant_id
+), top AS (
+  SELECT card_id, card_variant_id, cur_price, prev_price, rate FROM best
+  ORDER BY CASE WHEN $4::boolean THEN best.rate END DESC, CASE WHEN NOT $4::boolean THEN best.rate END, best.card_id
+  LIMIT $6
+)
+SELECT top.card_id, top.card_variant_id, v.variant, top.cur_price, top.prev_price,
+       cp.source_updated_at AS cur_updated_at, pp.source_updated_at AS prev_updated_at,
+       c.language, c.tcgdex_id, c.name, c.local_id, c.image_url, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, sp.name_ko AS species_name_ko
+FROM top
+JOIN card_variants v ON v.id = top.card_variant_id
+JOIN price_history cp ON cp.card_variant_id = top.card_variant_id AND cp.source_id = $1 AND cp.price_date = $2
+JOIN price_history pp ON pp.card_variant_id = top.card_variant_id AND pp.source_id = $1 AND pp.price_date = $3
+JOIN cards c ON c.id = top.card_id
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species sp ON sp.dex_id = c.dex_ids[1]
+ORDER BY CASE WHEN $4::boolean THEN top.rate END DESC, CASE WHEN NOT $4::boolean THEN top.rate END, top.card_id
+`
+
+type ListMoversParams struct {
+	SourceID  int16
+	AsOf      time.Time
+	CompareOn time.Time
+	Up        bool
+	MinPrice  decimal.Decimal
+	Lim       int32
+}
+
+type ListMoversRow struct {
+	CardID        int64
+	CardVariantID int64
+	Variant       string
+	CurPrice      decimal.Decimal
+	PrevPrice     decimal.Decimal
+	CurUpdatedAt  *time.Time
+	PrevUpdatedAt *time.Time
+	Language      string
+	TcgdexID      string
+	Name          string
+	LocalID       string
+	ImageUrl      *string
+	HasKoEdition  bool
+	SetTcgdexID   string
+	SetName       string
+	SpeciesNameKo *string
+}
+
+// 급등·급락 순위 (#8 Q3, 1단계 확정 안 c). 기준일·비교일 가격이 모두 min_price 이상인 변형의 변동률로 순위를 낸다.
+// 같은 카드는 변동률이 가장 큰(하락은 가장 작은) 변형 하나만. up 이면 0보다 큰 것만 큰 순, 아니면 0보다 작은 것만 작은 순.
+// 두 날짜의 행을 보조 인덱스(Index Only Scan)로 따로 읽어 해시 조인하도록 MATERIALIZED 로 나눈다.
+func (q *Queries) ListMovers(ctx context.Context, arg ListMoversParams) ([]ListMoversRow, error) {
+	rows, err := q.db.Query(ctx, listMovers,
+		arg.SourceID,
+		arg.AsOf,
+		arg.CompareOn,
+		arg.Up,
+		arg.MinPrice,
+		arg.Lim,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListMoversRow
+	for rows.Next() {
+		var i ListMoversRow
+		if err := rows.Scan(
+			&i.CardID,
+			&i.CardVariantID,
+			&i.Variant,
+			&i.CurPrice,
+			&i.PrevPrice,
+			&i.CurUpdatedAt,
+			&i.PrevUpdatedAt,
 			&i.Language,
 			&i.TcgdexID,
 			&i.Name,

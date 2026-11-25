@@ -119,3 +119,49 @@ LEFT JOIN fx_rates f
  AND f.rate_date = fxd.on_date
 WHERE v.card_id = @card_id AND ph.price_date >= @from_date AND src.price_kind = 'sale'
 ORDER BY v.id, src.id, ph.price_date;
+
+-- name: GetLatestPriceDate :one
+-- 소스의 가격 기준일 중 on_or_before 이하 가장 늦은 날 (#8 순위 기준일·비교일). 없으면 행이 없다.
+SELECT price_date FROM price_history
+WHERE source_id = @source_id AND price_date <= @on_or_before
+ORDER BY price_date DESC
+LIMIT 1;
+
+-- name: ListMovers :many
+-- 급등·급락 순위 (#8 Q3, 1단계 확정 안 c). 기준일·비교일 가격이 모두 min_price 이상인 변형의 변동률로 순위를 낸다.
+-- 같은 카드는 변동률이 가장 큰(하락은 가장 작은) 변형 하나만. up 이면 0보다 큰 것만 큰 순, 아니면 0보다 작은 것만 작은 순.
+-- 두 날짜의 행을 보조 인덱스(Index Only Scan)로 따로 읽어 해시 조인하도록 MATERIALIZED 로 나눈다.
+WITH cur AS MATERIALIZED (
+  SELECT p.card_variant_id, p.price FROM price_history p
+  WHERE p.source_id = @source_id AND p.price_date = @as_of AND p.price >= @min_price
+), prev AS MATERIALIZED (
+  SELECT p.card_variant_id, p.price FROM price_history p
+  WHERE p.source_id = @source_id AND p.price_date = @compare_on AND p.price >= @min_price
+), r AS (
+  SELECT v.card_id, cur.card_variant_id, cur.price AS cur_price, prev.price AS prev_price,
+         (cur.price - prev.price) / prev.price AS rate
+  FROM cur
+  JOIN prev ON prev.card_variant_id = cur.card_variant_id
+  JOIN card_variants v ON v.id = cur.card_variant_id
+), best AS (
+  SELECT DISTINCT ON (r.card_id) r.card_id, r.card_variant_id, r.cur_price, r.prev_price, r.rate
+  FROM r
+  WHERE CASE WHEN @up::boolean THEN r.rate > 0 ELSE r.rate < 0 END
+  ORDER BY r.card_id, CASE WHEN @up::boolean THEN r.rate END DESC, CASE WHEN NOT @up::boolean THEN r.rate END, r.card_variant_id
+), top AS (
+  SELECT * FROM best
+  ORDER BY CASE WHEN @up::boolean THEN best.rate END DESC, CASE WHEN NOT @up::boolean THEN best.rate END, best.card_id
+  LIMIT @lim
+)
+SELECT top.card_id, top.card_variant_id, v.variant, top.cur_price, top.prev_price,
+       cp.source_updated_at AS cur_updated_at, pp.source_updated_at AS prev_updated_at,
+       c.language, c.tcgdex_id, c.name, c.local_id, c.image_url, c.has_ko_edition,
+       s.tcgdex_id AS set_tcgdex_id, s.name AS set_name, sp.name_ko AS species_name_ko
+FROM top
+JOIN card_variants v ON v.id = top.card_variant_id
+JOIN price_history cp ON cp.card_variant_id = top.card_variant_id AND cp.source_id = @source_id AND cp.price_date = @as_of
+JOIN price_history pp ON pp.card_variant_id = top.card_variant_id AND pp.source_id = @source_id AND pp.price_date = @compare_on
+JOIN cards c ON c.id = top.card_id
+JOIN sets s ON s.id = c.set_id
+LEFT JOIN pokemon_species sp ON sp.dex_id = c.dex_ids[1]
+ORDER BY CASE WHEN @up::boolean THEN top.rate END DESC, CASE WHEN NOT @up::boolean THEN top.rate END, top.card_id;
