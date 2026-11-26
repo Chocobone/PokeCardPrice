@@ -190,7 +190,13 @@ interface MoversResponse {
 ### 4. 목업 (`src/frontend/src/api/mock/`)
 
 - `.env.development`의 `VITE_API_MOCK=true`이면 `src/api/cards.ts`가 목업을 쓴다. #8 이후 기본값은 `false`(실제 API)이고, 백엔드 없이 화면을 볼 때만 `true`로 바꾼다(Vite 재시작 필요). 화면·스토어는 목업 여부를 모른다. 운영 빌드(`.env.development` 미적용)에서는 목업 코드가 번들에 들어가지 않는다.
-- 목업은 검색·순위·카드 상세·시세 추이 네 함수를 흉내 낸다. 통화는 실제 API처럼 영어판 USD(`tcgcsv`), 일본판 EUR(`tcgdex_cardmarket`)이고 한글판 대표가는 `null`이다. 원화는 고정 환율(USD 1,400·EUR 1,500)로 만든다. 상세는 변형 하나·연결 없음, 추이는 계열 하나다.
+- 목업은 검색·순위·카드 상세·시세 추이 네 함수를 흉내 낸다. 통화는 실제 API처럼 영어판 USD(`tcgcsv`), 일본판 EUR(`tcgdex_cardmarket`)이고 한글판 대표가는 `null`이다. 원화는 고정 환율(USD 1,400·EUR 1,500)로 만든다. 기준일은 `2026-11-16` 고정이라 화면에서는 모두 "오래된 가격"으로 보인다.
+- 상세·추이는 변형 × 소스 계열로 만든다 (#13). 연결 카드는 없다. 기준일의 추이 마지막 값이 상세 가격과 같다.
+  - 영어판: 일반/TCGplayer(대표가), 일반/Cardmarket, 리버스 홀로/TCGplayer
+  - 일본판: 일반/Cardmarket(대표가), 리버스 홀로/Cardmarket
+  - 일반/Cardmarket: 7일마다 하루 빠짐, 200일보다 오래된 날은 원화 `null`(선 끊김), 원화는 하루 전 환율(`fxDate`가 가격 기준일 전날 → 표의 "환율 N월 N일")
+  - 일본판 리버스 홀로: 원화가 전혀 없음 (표의 "환율 없음", 차트의 원화 없음 안내)
+  - 약 20%의 카드는 대표가 계열이 내내 같은 값 (최소 = 최대)
 - 응답 지연 300ms, 요청 취소(`AbortSignal`) 지원. 검색어 `__error`는 500 오류를 흉내 낸다.
 - 상황 전환 (개발용): 주소에 `?mock=empty`를 붙이면 모든 목업 응답이 빈 결과, `?mock=error`면 500 오류가 된다. 빈 상태·오류 화면 확인용이다.
 - 호출 수: `globalThis.__mockStats` (`{ search, movers, card, prices }`). 캐시 동작 확인용이다.

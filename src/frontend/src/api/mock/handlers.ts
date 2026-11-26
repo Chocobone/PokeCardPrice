@@ -175,6 +175,8 @@ function findCard(id: number): MockCard {
  * - 영어판: 일반/TCGplayer(대표가), 일반/Cardmarket, 리버스 홀로/TCGplayer
  * - 일본판: 일반/Cardmarket(대표가), 리버스 홀로/Cardmarket
  * - 일반/Cardmarket 는 7일마다 하루씩 빠지고, 200일보다 오래된 날은 원화가 없다 (선 끊김 확인).
+ *   원화는 하루 전 환율로 환산한다 (표의 "환율 N월 N일" 확인).
+ * - 일본판 리버스 홀로는 원화가 전혀 없다 (표의 "환율 없음", 차트의 원화 없음 안내 확인).
  * - 일부 카드(약 20%)는 대표가 계열이 내내 같은 값이다 (최소 = 최대 확인).
  * 가격은 기준일(AS_OF)에서 대표가와 같아지도록 만든다 (검색 목업의 대표가와 맞춤).
  */
@@ -184,8 +186,10 @@ interface SeriesSpec {
   currency: Currency
   /** 대표가 대비 배율 */
   factor: number
-  /** 이 일수보다 오래된 날은 원화 null */
+  /** 이 일수보다 오래된 날은 원화 null (-1 이면 모든 날) */
   noFxBefore?: number
+  /** 원화 환산에 쓰는 환율이 가격 기준일보다 며칠 이른지 */
+  fxLag?: number
   /** 이 간격마다 하루를 뺀다 */
   skipEvery?: number
   flat?: boolean
@@ -197,13 +201,13 @@ function seriesSpecs(card: MockCard): SeriesSpec[] {
   if (card.language === 'en') {
     return [
       { variant: 'normal', source: 'tcgcsv', currency: 'USD', factor: 1, flat },
-      { variant: 'normal', source: 'tcgdex_cardmarket', currency: 'EUR', factor: 0.8, noFxBefore: 200, skipEvery: 7 },
+      { variant: 'normal', source: 'tcgdex_cardmarket', currency: 'EUR', factor: 0.8, noFxBefore: 200, skipEvery: 7, fxLag: 1 },
       { variant: 'reverse_holofoil', source: 'tcgcsv', currency: 'USD', factor: 2.4 },
     ]
   }
   return [
     { variant: 'normal', source: 'tcgdex_cardmarket', currency: 'EUR', factor: 1, flat },
-    { variant: 'reverse_holofoil', source: 'tcgdex_cardmarket', currency: 'EUR', factor: 2.1 },
+    { variant: 'reverse_holofoil', source: 'tcgdex_cardmarket', currency: 'EUR', factor: 2.1, noFxBefore: -1 },
   ]
 }
 
@@ -218,14 +222,14 @@ function seriesPrice(card: MockCard, spec: SeriesSpec, daysAgo: number): Price |
   const m = spec.flat ? 1 : Math.exp((drift * daysAgo) / 365 + 0.12 * (wave(daysAgo) - wave(0)))
   const amount = base * spec.factor * m
   const date = dateBefore(daysAgo)
-  const hasFx = !(spec.noFxBefore && daysAgo > spec.noFxBefore)
+  const hasFx = spec.noFxBefore === undefined || daysAgo <= spec.noFxBefore
   return {
     amount: amount.toFixed(2),
     currency: spec.currency,
     source: spec.source,
     date,
     krw: hasFx ? Math.round(amount * KRW_RATE[spec.currency]).toString() : null,
-    fxDate: hasFx ? date : null,
+    fxDate: hasFx ? dateBefore(daysAgo + (spec.fxLag ?? 0)) : null,
     updatedAt: null,
   }
 }
