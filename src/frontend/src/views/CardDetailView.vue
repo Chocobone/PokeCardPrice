@@ -5,6 +5,7 @@ import { useRoute } from 'vue-router'
 import CardHeader from '@/components/card-detail/CardHeader.vue'
 import LinkedCards from '@/components/card-detail/LinkedCards.vue'
 import PriceHeadline from '@/components/card-detail/PriceHeadline.vue'
+import PriceHistory from '@/components/card-detail/PriceHistory.vue'
 import PriceTable from '@/components/card-detail/PriceTable.vue'
 import StateView from '@/components/common/StateView.vue'
 import { SITE_NAME } from '@/router'
@@ -86,6 +87,10 @@ watch(
         v-if="hasAnyPrice(card)"
         :variants="card.variants"
         :representative="card.price"
+      />
+      <PriceHistory
+        v-if="hasAnyPrice(card)"
+        :card="card"
       />
       <LinkedCards
         v-if="card.linked.length"

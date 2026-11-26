@@ -170,56 +170,130 @@ function findCard(id: number): MockCard {
   return card
 }
 
-/** 카드 상세. 변형은 하나(normal), 연결 카드는 없다. */
+/**
+ * 목업 가격 계열. 실제 API 처럼 변형 × 소스별로 날짜 가격을 만든다 (#13 차트 확인용).
+ * - 영어판: 일반/TCGplayer(대표가), 일반/Cardmarket, 리버스 홀로/TCGplayer
+ * - 일본판: 일반/Cardmarket(대표가), 리버스 홀로/Cardmarket
+ * - 일반/Cardmarket 는 7일마다 하루씩 빠지고, 200일보다 오래된 날은 원화가 없다 (선 끊김 확인).
+ * - 일부 카드(약 20%)는 대표가 계열이 내내 같은 값이다 (최소 = 최대 확인).
+ * 가격은 기준일(AS_OF)에서 대표가와 같아지도록 만든다 (검색 목업의 대표가와 맞춤).
+ */
+interface SeriesSpec {
+  variant: string
+  source: string
+  currency: Currency
+  /** 대표가 대비 배율 */
+  factor: number
+  /** 이 일수보다 오래된 날은 원화 null */
+  noFxBefore?: number
+  /** 이 간격마다 하루를 뺀다 */
+  skipEvery?: number
+  flat?: boolean
+}
+
+function seriesSpecs(card: MockCard): SeriesSpec[] {
+  if (baseAmount(card) === null) return []
+  const flat = rand(card.id * 3) < 0.2
+  if (card.language === 'en') {
+    return [
+      { variant: 'normal', source: 'tcgcsv', currency: 'USD', factor: 1, flat },
+      { variant: 'normal', source: 'tcgdex_cardmarket', currency: 'EUR', factor: 0.8, noFxBefore: 200, skipEvery: 7 },
+      { variant: 'reverse_holofoil', source: 'tcgcsv', currency: 'USD', factor: 2.4 },
+    ]
+  }
+  return [
+    { variant: 'normal', source: 'tcgdex_cardmarket', currency: 'EUR', factor: 1, flat },
+    { variant: 'reverse_holofoil', source: 'tcgdex_cardmarket', currency: 'EUR', factor: 2.1 },
+  ]
+}
+
+/** 기준일로부터 daysAgo 일 전의 가격. 기준일(0)에는 대표가 × 배율이다. 빠진 날은 null. */
+function seriesPrice(card: MockCard, spec: SeriesSpec, daysAgo: number): Price | null {
+  if (spec.skipEvery && daysAgo > 0 && daysAgo % spec.skipEvery === 0) return null
+  const base = baseAmount(card)
+  if (base === null) return null
+  const seed = card.id * 31 + spec.factor * 1000
+  const wave = (i: number) => 0.6 * Math.sin(i / 11 + seed) + 0.4 * rand(seed + i)
+  const drift = (rand(seed) - 0.5) * 0.9
+  const m = spec.flat ? 1 : Math.exp((drift * daysAgo) / 365 + 0.12 * (wave(daysAgo) - wave(0)))
+  const amount = base * spec.factor * m
+  const date = dateBefore(daysAgo)
+  const hasFx = !(spec.noFxBefore && daysAgo > spec.noFxBefore)
+  return {
+    amount: amount.toFixed(2),
+    currency: spec.currency,
+    source: spec.source,
+    date,
+    krw: hasFx ? Math.round(amount * KRW_RATE[spec.currency]).toString() : null,
+    fxDate: hasFx ? date : null,
+    updatedAt: null,
+  }
+}
+
+/** 카드 상세. 변형·소스는 seriesSpecs, 연결 카드는 없다. */
 export async function getCard(id: number, signal?: AbortSignal): Promise<CardDetail> {
   await delay(signal)
   mockStats.card++
   if (scenario() === 'error') throw new ApiError(500, 'internal', '목업 서버 오류')
   const card = findCard(id)
   const summary = withPrice(card)
+  const specs = seriesSpecs(card)
+  const variants = [...new Set(['normal', ...specs.map((s) => s.variant)])].map((variant) => ({
+    variant,
+    prices: specs
+      .filter((s) => s.variant === variant)
+      .map((s) => seriesPrice(card, s, 0))
+      .filter((p): p is Price => p !== null),
+  }))
   return {
     ...summary,
+    price: variants[0]?.prices[0] ?? null,
     set: { ...card.set, releaseDate: null, logoUrl: null, cardCount: null },
     rarity: null,
     dexIds: [],
     linked: [],
-    variants: [{ variant: 'normal', prices: summary.price ? [summary.price] : [] }],
+    variants,
   }
 }
 
 const PERIOD_DAYS: Record<Period, number> = { '7d': 7, '30d': 30, '90d': 90, '1y': 365 }
 
-/** 시세 추이. 대표가 변형 하나·소스 하나의 날짜별 임의 가격이다. */
+const avg = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / xs.length
+
+/** 시세 추이. 변형 × 소스별 날짜 가격과 요약 (계약의 요약 규칙대로). */
 export async function getCardPrices(id: number, period: Period, signal?: AbortSignal): Promise<PriceHistoryResponse> {
   await delay(signal)
   mockStats.prices++
   if (scenario() === 'error') throw new ApiError(500, 'internal', '목업 서버 오류')
   const card = findCard(id)
   const days = PERIOD_DAYS[period]
-  const base = baseAmount(card)
   const res: PriceHistoryResponse = { cardId: id, period, from: dateBefore(days), series: [] }
-  if (base === null) return res
-  const prices: Price[] = []
-  for (let i = days; i >= 0; i--) prices.push(priceOf(card, i, base * (0.8 + rand(card.id * 13 + i) * 0.4)))
-  const firstPrice = prices[0]
-  const lastPrice = prices.at(-1)
-  if (!firstPrice || !lastPrice) return res
-  const amounts = prices.map((p) => Number(p.amount))
-  const first = Number(firstPrice.amount)
-  const last = Number(lastPrice.amount)
-  res.series.push({
-    variant: 'normal',
-    source: SOURCE[card.language],
-    currency: CURRENCY[card.language],
-    points: prices.map((p): PricePoint => ({ date: p.date, amount: p.amount, krw: p.krw })),
-    summary: {
-      current: lastPrice,
-      average: (amounts.reduce((a, b) => a + b, 0) / amounts.length).toFixed(2),
-      min: Math.min(...amounts).toFixed(2),
-      max: Math.max(...amounts).toFixed(2),
-      changeRate: first > 0 ? Math.round(((last - first) / first) * 1e6) / 1e6 : null,
-      from: firstPrice.date,
-    },
-  })
+  for (const spec of seriesSpecs(card)) {
+    const prices: Price[] = []
+    for (let i = days; i >= 0; i--) {
+      const p = seriesPrice(card, spec, i)
+      if (p) prices.push(p)
+    }
+    const firstPrice = prices[0]
+    const lastPrice = prices.at(-1)
+    if (!firstPrice || !lastPrice) continue
+    const amounts = prices.map((p) => Number(p.amount))
+    const first = Number(firstPrice.amount)
+    const last = Number(lastPrice.amount)
+    res.series.push({
+      variant: spec.variant,
+      source: spec.source,
+      currency: spec.currency,
+      points: prices.map((p): PricePoint => ({ date: p.date, amount: p.amount, krw: p.krw })),
+      summary: {
+        current: lastPrice,
+        average: avg(amounts).toFixed(2),
+        min: Math.min(...amounts).toFixed(2),
+        max: Math.max(...amounts).toFixed(2),
+        changeRate: prices.length > 1 && first > 0 ? Math.round(((last - first) / first) * 1e6) / 1e6 : null,
+        from: firstPrice.date,
+      },
+    })
+  }
   return res
 }

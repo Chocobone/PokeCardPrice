@@ -17,6 +17,8 @@
   --color-down: #1c7ed6;
   --color-danger: #c92a2a;
   --color-focus: #4dabf7;
+  /* 차트 두 번째 계열 (첫 계열은 --color-accent) */
+  --color-series-2: #0c8599;
 
   --font-family: system-ui, -apple-system, 'Segoe UI', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
   --font-sm: 0.875rem;
@@ -58,6 +60,7 @@
     --color-up: #f06595;
     --color-down: #4dabf7;
     --color-danger: #ff6b6b;
+    --color-series-2: #3bc9db;
     --shadow-sm: 0 1px 2px rgb(0 0 0 / 40%);
   }
 }
