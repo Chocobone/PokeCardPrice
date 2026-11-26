@@ -20,10 +20,10 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '검색' },
   },
   {
-    // 카드 상세 화면은 #13 에서 만든다. 지금은 자리 화면이다.
+    // 카드 상세 (#13). 탭 제목은 카드를 받은 뒤 화면이 카드 이름으로 바꾼다.
     path: '/cards/:id',
     name: 'card',
-    component: () => import('@/views/CardPlaceholderView.vue'),
+    component: () => import('@/views/CardDetailView.vue'),
     meta: { title: '카드 상세' },
   },
   {
